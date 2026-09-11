@@ -32,7 +32,8 @@ instructions.
   publishable.
 - [Pump Device Integration Server](../samples/DI/PumpDeviceIntegrationServer/README.md) —
   Device Integration Part 100 server using `Opc.Ua.Di.Server`'s fluent
-  builder.
+  builder, over the OPC 40223 Pumps model and the shared `Opc.Ua.Machinery`
+  package.
 - [Minimal Robot Server](../samples/Robotics/MinimalRobotServer/README.md) —
   OPC 40010 Robotics with independently configurable RSL/GPOS motion and
   live OpenUSD transforms.
@@ -62,6 +63,14 @@ instructions.
 - [Minimal ISA-95 Server](../samples/Isa95/MinimalIsa95Server/README.md) —
   hosts the OPC-10030 ISA-95 Common Model with OPC-10031-4 Job Control V1 and
   V2, using the typed common-model builder and in-memory Job Control provider.
+- [Machinery Server](../samples/Machinery/MachineryServer/README.md) — one
+  simulated hydraulic press exercising every part of OPC 40001: the building
+  blocks and both state machines of 40001-1, a process value (40001-2), job
+  management over ISA-95 Job Control V2 (40001-3), a compressed-air carrier
+  (40001-4) and result transfer (40001-101).
+- [Machinery Client](../samples/Machinery/MachineryClient/README.md) — walks
+  the `Machines` folder of any OPC 40001 server, prints identification and
+  state, downloads a measurement result and streams state transitions.
 
 ## OpenUSD site composition
 

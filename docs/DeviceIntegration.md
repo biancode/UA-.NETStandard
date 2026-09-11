@@ -20,6 +20,7 @@ plugs it together.
 - [Device builder](#device-builder)
 - [Device sub-type extensions](#device-sub-type-extensions)
 - [Hosting integration](#hosting-integration)
+- [Coexisting with companion models that own the DI address space](#coexisting-with-companion-models-that-own-the-di-address-space)
 - [Lock service](#lock-service)
 - [Software update](#software-update)
 - [Client helpers](#client-helpers)
@@ -628,6 +629,59 @@ The current gating is implementation-derived:
 | `SoftwareLoadingMode.Package` | `http://opcfoundation.org/UA-Profile/DI/Server/FileSystemLoading` | `DI SU FileSystem Loading`, `DI SU Installation for File System` |
 | `SoftwareLoadingMode.Direct` | `http://opcfoundation.org/UA-Profile/DI/Server/DirectLoading` | `DI SU DirectLoading`, `DI SU UpdateStatus` |
 | `SoftwareLoadingMode.Cached` | `http://opcfoundation.org/UA-Profile/DI/Server/CachedLoading` | `DI SU CachedLoading`, `DI SU Installation for Cached Loading`, `DI SU UpdateStatus` |
+
+## Coexisting with companion models that own the DI address space
+
+Only one hosted node manager may load the Device Integration model. Every
+companion-model registration that loads it therefore claims
+`DiAddressSpaceOwnership`, and a second claim fails at configuration time with
+a message naming the current owner — long before the OPC UA server would reject
+a duplicate namespace.
+
+The registrations that claim it today:
+
+| Registration | Also claims |
+| --- | --- |
+| `AddOpcUaDi()` | — |
+| `AddRobotics()` (OPC 40010) | — |
+| `AddMachinery()` (OPC 40001) | `Isa95AddressSpaceOwnership`, when `MachineryParts.Jobs` is selected |
+| `AddIsa95Server()` (OPC 10030 / 10031-4) | `Isa95AddressSpaceOwnership` |
+
+So `AddMachinery()` and `AddRobotics()` cannot both be hosted in one server, and
+neither can be combined with `AddOpcUaDi()`. That is a real constraint, not an
+implementation detail: the DI type tree and the `DeviceSet` instance exist once
+per server.
+
+What to do instead: keep one DI-owning manager and load the other companion
+models into it.
+
+```csharp
+// In the manager that owns DI:
+protected override ValueTask<NodeStateCollection> LoadPredefinedNodesAsync(
+    ISystemContext context, CancellationToken ct = default)
+{
+    var nodes = new NodeStateCollection();
+    nodes.AddMachineryTypeSystem(context, MachineryParts.BuildingBlocks);
+    nodes.AddOpcUaPumps(context);
+    return new ValueTask<NodeStateCollection>(nodes);
+}
+```
+
+```csharp
+// In the hosting pipeline, targeted at that exact manager type:
+builder.ConfigureMachineryFor<PumpNodeManager>(async machinery => { /* … */ });
+```
+
+`AddMachineryTypeSystem` loads the DI base model itself when the selected parts
+need it, so a manager that calls it must not also call `AddOpcUaDi(context)`.
+
+Two parts of OPC 40001 need no Device Integration at all and can therefore be
+hosted next to a DI-owning manager without any of this:
+`MachineryParts.Jobs` composes only ISA-95 Job Control V2, and
+`MachineryParts.Result` needs nothing but UA core —
+`AddMachineryResults()` registers a stand-alone result server for the latter.
+
+See the [Machinery developer guide](Machinery.md#coexisting-with-a-server-that-already-owns-di-or-isa-95).
 
 ### Client-side surface
 

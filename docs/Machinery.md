@@ -9,6 +9,20 @@ production equipment adds depending on its use case.
 - [Library layout](#library-layout)
 - [Models and namespaces](#models-and-namespaces)
 - [Dependency specifications](#dependency-specifications)
+- [Quick start — server](#quick-start--server)
+- [Quick start — client](#quick-start--client)
+- [Server hosting model](#server-hosting-model)
+- [Coexisting with a server that already owns DI or ISA-95](#coexisting-with-a-server-that-already-owns-di-or-isa-95)
+- [Builder reference](#builder-reference)
+  - [OPC 40001-1 building blocks](#opc-40001-1-building-blocks)
+  - [OPC 40001-2 process values](#opc-40001-2-process-values)
+  - [OPC 40001-3 job management](#opc-40001-3-job-management)
+  - [OPC 40001-4 energy](#opc-40001-4-energy)
+  - [OPC 40001-101 results](#opc-40001-101-results)
+- [Abstract event types](#abstract-event-types)
+- [State machines are server-driven](#state-machines-are-server-driven)
+- [Client](#client)
+- [Conformance matrix](#conformance-matrix)
 - [Model sources, identifier tables and repairs](#model-sources-identifier-tables-and-repairs)
 - [Generator gaps found while adding these models](#generator-gaps-found-while-adding-these-models)
 
@@ -24,6 +38,13 @@ machine tool that reports jobs and results does not have to carry PADIM.
 | `Opc.Ua.Machinery.Jobs` | OPC 40001-3 Job Management | `…/UA/Machinery/Jobs/` |
 | `Opc.Ua.Machinery.Energy` | OPC 40001-4 Energy Management | `…/UA/Machinery/Energy/` |
 | `Opc.Ua.Machinery.Result` | OPC 40001-101 Result Transfer | `…/UA/Machinery/Result/` |
+
+Two more packages turn those models into a running server and a client:
+
+| Package | What it adds |
+| --- | --- |
+| `Opc.Ua.Machinery.Server` | `MachineryNodeManager`, the fluent machine builder, the state-machine controllers, the OPC 40001-101 download path, and the `AddMachinery()` hosting pipeline |
+| `Opc.Ua.Machinery.Client` | `MachineryClient` — discovery from the `Machines` folder, identification, state observation, job control and result download |
 
 ## Models and namespaces
 
@@ -73,6 +94,608 @@ Opc.Ua.Core
 Opc.Ua.Core ─── Opc.Ua.Machinery.Result
 Opc.Ua.ISA95 ─── Opc.Ua.Machinery.Jobs
 ```
+
+## Quick start — server
+
+```csharp
+builder.Services
+    .AddOpcUa()
+    .AddServer(options =>
+    {
+        options.ApplicationName = "MachineryServer";
+        options.ApplicationUri = "urn:localhost:OPCFoundation:MachineryServer";
+        options.EndpointUrls.Add("opc.tcp://localhost:62546/MachineryServer");
+    })
+    .AddMachinery(options => options.Parts = MachineryParts.All)
+    .ConfigureMachinery(async machinery =>
+    {
+        IMachineHandle<BaseObjectState> press = await machinery
+            .AddMachine("Press-1")
+            .WithIdentification(id =>
+            {
+                id.Manufacturer = new LocalizedText("Acme");
+                id.Model = new LocalizedText("P-500");
+                id.SerialNumber = "SN-0001";
+                id.ProductInstanceUri = "urn:acme:press:1";
+            })
+            .WithMonitoring(monitoring => monitoring
+                .WithMachineryItemState()
+                .WithOperationMode())
+            .BuildAsync();
+
+        // The handle is how the application drives the machine afterwards.
+        await press.ItemState!.SetStateAsync(MachineryItemStateValue.NotExecuting);
+    });
+```
+
+Nothing reaches the address space until `BuildAsync` runs, and a failure
+anywhere in the chain rolls the machine back — the server is never left with
+half a machine.
+
+`MachineryParts` decides which models the manager loads, which namespaces it
+announces and which conformance units it can advertise. Trim it so the server
+carries only what it serves:
+
+| Value | Needs |
+| --- | --- |
+| `BuildingBlocks` | DI + IA |
+| `ProcessValues` | `BuildingBlocks` + PADIM + IRDI |
+| `Jobs` | ISA-95 Job Control V2 only — **no DI** |
+| `Energy` | `BuildingBlocks` + ECM |
+| `Result` | UA core only — **no DI, no machine model** |
+
+A server that publishes nothing but measurement results skips the machine model
+entirely:
+
+```csharp
+builder.Services
+    .AddOpcUa()
+    .AddServer(/* … */)
+    .AddMachineryResults(options => options.RootBrowseName = "ResultManagement");
+```
+
+That registers [`MachineryResultNodeManager`](../src/Opc.Ua.Machinery.Server/MachineryResultNodeManager.cs),
+which shares its method binder with the `ResultManagement` object below a
+machine, so both answer a client identically.
+
+## Quick start — client
+
+```csharp
+MachineryClient machinery = session.Machinery(telemetry);
+
+await foreach (MachineEntry machine in machinery.EnumerateMachinesAsync(ct))
+{
+    MachineIdentification? id = await machinery
+        .ReadIdentificationAsync(machine.NodeId, ct);
+    FiniteStateSnapshot? state = await machinery
+        .GetItemStateAsync(machine.NodeId, ct);
+
+    Console.WriteLine(
+        $"{id?.Manufacturer.Text} {id?.Model.Text} — {state?.CurrentState.Text}");
+}
+```
+
+Every accessor returns `null` rather than throwing when a machine does not
+publish the block: OPC 40001-1 makes nearly everything optional, so a client
+that insists on a block would work against one vendor and fail against the next.
+
+## Server hosting model
+
+`AddMachinery()` registers `MachineryNodeManager`, a `DiNodeManager` subclass —
+the same shape `RoboticsNodeManager` has. One manager serves every configured
+part, because the parts share one instance tree: a machine's process values,
+jobs, energy carriers and results all hang off the same object.
+
+`ConfigureMachinery(...)` runs during server startup, after the models are
+loaded and the address space is wired. Three overloads take a delegate
+(sync, async, async with token) and one takes an `IMachineryConfigurator`
+class, which is the one to reach for when the configuration needs services
+from the container.
+
+Instances are minted into an application-owned namespace,
+`MachineryServerOptions.InstanceNamespaceUri`
+(default `urn:opcua-netstandard:machinery:instances`). It must not be a model
+namespace, and the options validate that.
+
+## Coexisting with a server that already owns DI or ISA-95
+
+`AddMachinery()` claims the Device Integration address space, and — when the
+`Jobs` part is selected — the ISA-95 namespaces as well. A second registration
+that would load the same models fails immediately with a message naming the
+current owner, rather than producing a server with two `DeviceSet` trees.
+
+A server that already owns either one loads the Machinery models into its own
+manager and drives them through the same builder:
+
+```csharp
+protected override ValueTask<NodeStateCollection> LoadPredefinedNodesAsync(
+    ISystemContext context, CancellationToken ct = default)
+{
+    var nodes = new NodeStateCollection();
+    nodes.AddMachineryTypeSystem(context, MachineryParts.BuildingBlocks);
+    nodes.AddOpcUaPumps(context);
+    return new ValueTask<NodeStateCollection>(nodes);
+}
+```
+
+```csharp
+builder.ConfigureMachineryFor<PumpNodeManager>(async machinery =>
+{
+    await machinery.AddMachine(pump, new QualifiedName("Pump-1"))
+        .WithIdentification(/* … */)
+        .BuildAsync();
+});
+```
+
+`AddMachine<TState>(TState machine, …)` adopts an instance a companion
+specification created — an OPC 40223 `PumpState`, an OPC 40223-style
+`GeneratorSetState` — so the vendor model keeps its own type definition and
+still answers the Machinery browse paths. The custom manager only has to expose
+an `IMachineryNodeIdFactory`; `MachineryNodeManager` implements it, and a
+custom manager implements it with a thread-safe allocator for the configured
+instance namespace.
+
+## Builder reference
+
+### OPC 40001-1 building blocks
+
+Every block is attached to its machinery item with `HasAddIn`, which is what
+OPC 40001-1 uses — not `HasComponent`.
+
+| Call | What it adds |
+| --- | --- |
+| `WithIdentification(…)` | `Identification`, typed `MachineIdentificationType`. The browse name comes from the DI namespace because the type derives from DI's `FunctionalGroupType`. `Manufacturer`, `SerialNumber` and (for a machine) `ProductInstanceUri` are mandatory and validated. |
+| `WithMonitoring(…)` | `Monitoring`, and below it `Status/MachineryItemState`, `Status/MachineryOperationMode`, `Status/Stacklight` (OPC 10000-200 IA), `Health`, `Process`, `Consumption` — each only when asked for |
+| `WithComponents(…)` | `Components`, and one `AddComponent` per machine component. A component gets the narrower `MachineryComponentIdentificationType`. |
+| `WithMachineryEquipment(…)` | `MachineryEquipment` and the equipment below it. `MachineryEquipmentTypeId` is mandatory and required by the call; `WithEquipmentLife(…)` adds the DI `LifetimeVariableType` the equipment interface declares. |
+| `WithNotifications(…)` | `Notifications`, with `EventNotifier` set, registered as a root notifier, and a publisher the application reports its own events on |
+| `WithOperationCounters(…)` | `OperationCounters` — `PowerOnDuration`, `OperationDuration`, `OperationCycleCounter` |
+| `WithLifetimeCounters(…)` | `LifetimeCounters` and one DI `LifetimeVariableType` per `AddLifetimeVariable` |
+
+#### The `MachineryBuildingBlocks` organizer
+
+OPC 40001-1 §7.1 puts the building blocks below a `FolderType` object named
+`MachineryBuildingBlocks` (Machinery namespace), referenced from the machinery
+item with `HasComponent`, and the blocks themselves with `HasAddIn` from that
+folder. Table 12 of the specification says the item state, the operation mode,
+both counters, monitoring, equipment and notifications **shall** be reachable
+that way, and identification and the components folder **may** be.
+
+This is not presentation. Every conformance unit for those blocks is worded
+*"has this AddIn under its MachineryBuildingBlocks folder"*, and OPC 40001-3's
+`Machinery Job Management Base` is worded the same way — so a server without
+the folder satisfies none of them. The builder creates it on first use and
+references every block it builds; §7.3 forbids duplicating the node, so the
+second path is a reference to the same node, not a copy. The blocks keep their
+direct `HasAddIn` from the machinery item as well, which §7.1 recommends as the
+top-level entry point.
+
+There is no `MachineryItems` folder and no `MachineryBuildingBlocksType` in
+1.04.1 — both appear in older drafts and in reduced NodeSet copies. The folder
+has no type of its own: it is a plain `FolderType` identified by its browse
+name, which is why the builder assembles it rather than a generated factory.
+The `Machines` folder is `Organizes`-referenced from `Objects`.
+
+#### Default instance browse names are load-bearing
+
+Every OPC 40001-1 conformance unit is worded *"using the
+DefaultInstanceBrowseName"*, so the namespace a block's browse name sits in is
+part of the contract, and it is not always the Machinery one:
+`MachineryOperationCounterType` declares `2:OperationCounters` — the Device
+Integration namespace — because OPC 40001-1 reuses the OPC 10000-100 functional
+group so a client written against Device Integration finds it.
+`MachineryItemIdentificationType` and its two subtypes do the same with
+`2:Identification`. `MachineryNodeSetConformanceTests` pins all ten values
+against the vendored NodeSet.
+
+### OPC 40001-2 process values
+
+```csharp
+.WithProcessValue(new QualifiedName("OilTemperature"), pv => pv
+    .WithEngineeringUnits(degreeCelsius, new Range { Low = -20, High = 120 })
+    .WithLimits(lowLow: 5, low: 15, high: 65, highHigh: 80)
+    .WithSetpoint(45)
+    .WithDeviationLimits(low: -10, high: 10)
+    .WithPercentageValue()
+    .WithStatus()
+    .WithLimitAlarm()
+    .WithDeviationAlarm()
+    .WithZeroPointAdjustment(async (processValue, ct) => await ZeroAsync(ct))
+    .WithValue(45)
+    .Bind(out IProcessValueHandle oilTemperature))
+```
+
+The application drives the value through the handle afterwards, and everything
+derived from it follows:
+
+```csharp
+await oilTemperature.SetValueAsync(70.0);   // percentage, both alarms
+await oilTemperature.SetSetpointAsync(55);  // deviation alarm
+```
+
+`WithLimitAlarm()` and `WithDeviationAlarm()` do more than create the objects
+the model declares. Each one mirrors the limits onto the alarm — absolute
+limits from `WithLimits`, deviations from `WithDeviationLimits` — points the
+condition at the signal as its `InputNode`, gives it the source, name and
+enable state OPC 10000-9 needs, registers it as a root notifier, and
+re-evaluates it on every `SetValueAsync`. An alarm that is only created never
+activates and never reports, which is what the objects alone amount to.
+
+`WithZeroPointAdjustment` binds the optional OPC 30081 method and reports a
+`ZeroPointAdjustmentEventType` event on **every** call — the part's conformance
+unit says all instances supporting the method do — with the handler deciding
+only the `ZeroPointAdjustmentResult` status the event carries. Because that
+event type is abstract, the event is reported with a concrete subtype; see
+[Abstract event types](#abstract-event-types).
+
+`ProcessValueType` derives from PADIM's `AnalogSignalType`, and its mandatory
+`AnalogSignal` child keeps PADIM's `AnalogSignalVariableType` as its declared
+type — OPC 40001-2 does **not** narrow it. What the part adds is
+`ProcessValueVariableType`, a *subtype* of that variable type carrying
+`LowLowLimit` / `LowLimit` / `HighLimit` / `HighHighLimit` and
+`PercentageValue`. An instance may use a subtype in a declared slot, so the
+builder puts the richer type there and the limits become reachable. The
+generated factory alone would leave the PADIM type in place and
+`WithLimits(...)` would have nowhere to write.
+
+Substituting the subtype costs one repair. Two PADIM members the derived types
+inherit come out of the generator without their reference type — and, for
+`EngineeringUnits`, without its namespace-0 browse name — when
+`ProcessValueVariableType` is instantiated on its own, which is exactly the path
+the substitution takes. A node whose `ReferenceTypeId` is null is in the node
+tree but produces no reference in a filtered Browse, so no client ever sees it:
+`SignalTag` is mandatory on PADIM's `AnalogSignalType`, and `EngineeringUnits`
+is where every Data Access client reads the unit — and what the
+`0:Data Access AnalogUnitType` unit of the OPC 40001-2 base facet rests on.
+`ProcessValueBuilder.RepairInheritedPadimMembers` puts both back; see
+[Generator gaps](#generator-gaps-found-while-adding-these-models).
+
+### OPC 40001-3 job management
+
+```csharp
+.WithJobManagement(jobs => jobs
+    .WithJobOrderReceiver(provider)
+    .WithJobResponseProvider(provider)
+    .WithJobOrderCatalog(provider))
+```
+
+`JobManagementType` has exactly two mandatory children: `JobOrderControl`, an
+ISA-95 `JobOrderReceiverObjectType`, and `JobOrderResults`, an ISA-95
+`JobResponseProviderObjectType`. The eleven job verbs — `Store`,
+`StoreAndStart`, `Start`, `Stop`, `Abort`, `Pause`, `Resume`, `Clear`,
+`Cancel`, `Update`, `RevokeStart` — belong to the ISA-95 type, not to
+OPC 40001-3, and are bound by the shared
+[`Isa95JobControlV2Binder`](../src/Opc.Ua.ISA95.Server/Providers/Isa95JobControlV2Binder.cs)
+that `Isa95NodeManager` uses. A client therefore sees the same verbs with the
+same semantics whether it reaches them through a stand-alone ISA-95 root or
+through a machine.
+
+When no provider is supplied explicitly the builder resolves
+`IIsa95JobOrderReceiverV2` from the application services, so
+`AddInMemoryIsa95JobControlProvider()` is enough for a demo server.
+
+### OPC 40001-4 energy
+
+```csharp
+.WithEnergy(energy => energy
+    .AddResource(MachineryEnergyCarrier.CompressedAir, air =>
+    {
+        air.Main
+            .WithApplicationTag("press/CompressedAir")
+            .WithNonElectricalEnergy(importHighPrecision: 0, exportHighPrecision: 0)
+            .WithVolumeFlow(volume: 184_320f, volumeFlowRate: 18.4f)
+            .WithBaseFlow(pressure: 620_000f, temperature: 294.65f);
+
+        air.AddMeteringPoint(
+            new QualifiedName("ClampingCylinders"),
+            point => point.WithNonElectricalEnergy(0, 0));
+    }))
+```
+
+OPC 40001-4 is an extension of the OPC 40001-1 `Monitoring` building block
+rather than a block of its own (§6.1), and its structure is three levels deep:
+
+```
+Monitoring
+  Consumption                    ← OPC 40001-1 MonitoringType
+    CompressedAir                ← well-known FolderType browse name, §9.1
+      Main                       ← well-known EnergyMeasurementType name, §9.2
+      ClampingCylinders          ← further metering points
+```
+
+A *metering point* is an OPC 34100 `EnergyMeasurementType` object that
+*implements* `INonElectricalEnergyType` and the flow interfaces; the interfaces
+are abstract, so nothing is ever an instance of them. `WithEnergy` materialises
+the monitoring add-in and the `Consumption` folder when the machine does not
+already publish them, and `AddResource` always creates `Main` — the
+`Machinery Energy Main grouping` unit requires one for *each* resource folder,
+so a resource without it would make the server non-conformant for every other
+resource too.
+
+`Contains` (§8.1) runs **from** the main metering point **to** a sub-meter whose
+readings are part of it. Both ends must be `EnergyMeasurementType` objects,
+which is why it never points at a resource folder or at the same-named Object
+the Energy model carries — those Objects exist only to publish the well-known
+browse names.
+
+Electricity is the one resource OPC 40001-4 describes with no interfaces of its
+own: §6.5 defers it to OPC 34100's energy profiles. `WithInterface` and
+`AddMeasurementValue` are how a metering point takes one:
+
+```csharp
+.AddResource(MachineryEnergyCarrier.Electricity, electricity =>
+    electricity.Main
+        .WithApplicationTag("press/Electricity")
+        .WithInterface(NodeId.Create(
+            Opc.Ua.ECM.ObjectTypes.IEnergyProfileE1Type,
+            Opc.Ua.ECM.Namespaces.ECM,
+            context.Context.NamespaceUris))
+        .AddMeasurementValue(
+            new QualifiedName(Opc.Ua.ECM.BrowseNames.AcActivePowerTotal),
+            Variant.From(41_250.0f),
+            watt))
+```
+
+The units OPC 40001-4 pins are the UNECE Recommendation 20 codes from its
+attribute tables and are applied by the builder: watt hours for the two energy
+readings, pascal for `Pressure`, kelvin for `Temperature`.
+
+### OPC 40001-101 results
+
+```csharp
+.WithResultManagement(results => results
+    .WithInMemoryStore(capacity: 32)
+    .WithResultsFolder(publishedResults: 4)
+    .WithFileTransfer())
+```
+
+All five methods of `ResultManagementType` are optional; the builder publishes
+`GetLatestResult`, `GetResultById`, `GetResultIdListFiltered`,
+`AcknowledgeResults` and `ReleaseResultHandle` once a store is bound, and the
+`ResultTransfer` object only when downloads are enabled.
+
+Substitute a real store by implementing
+[`IMachineryResultStore`](../src/Opc.Ua.Machinery.Server/Results/MachineryResult.cs)
+and passing it to `WithStore(...)`, or by registering it in the container.
+
+`ResultTransferType` derives from `TemporaryFileTransferType`, so the download
+is the standard OPC 10000-5 sequence: `GenerateFileForRead` returns a transient
+`FileType` object and a handle that is **already open**, the client reads from
+it and closes it. The repository had only the write half of that pattern —
+`SoftwareUpdateFileTransferManager` serves `GenerateFileForWrite` /
+`CloseAndCommit` for DI software packages — so
+[`MachineryResultTransferManager`](../src/Opc.Ua.Machinery.Server/Results/MachineryResultTransferManager.cs)
+is the read half, built to the same shape: one transient `FileState` per handle,
+the handle bound to the session that opened it, a cap on concurrent handles, and
+a timeout after which an abandoned handle is reclaimed. Reclaiming is swept at
+the start of each `GenerateFileForRead` rather than driven by a per-object
+timer, so an abandoned handle survives until the next download — where it costs
+nothing but a transient node.
+
+`WithResultsFolder` publishes the most recent results as `ResultType` variables
+as well, which is what the `Machinery-Result ResultVariables` unit asks for —
+an empty folder satisfies nothing. The variables are a fixed ring created with
+the machine: the newest result lands in the first slot and the others shift
+down, so a client can subscribe to a slot once and keep receiving results, and
+the server never adds or deletes nodes while it runs.
+
+`GetLatestResult`, `GetResultById` and `GetResultIdListFiltered` each return a
+`ResultHandle` that pins what they handed out until the client calls
+`ReleaseResultHandle`. The handle is bound to the calling session, and
+releasing one twice is refused.
+
+Because the payload is materialised from the store synchronously,
+`GenerateFileForRead` returns `NodeId.Null` for `completionStateMachine` — the
+value OPC 10000-5 defines for "no completion state machine".
+
+## Abstract event types
+
+Two of the event types the series declares are **abstract**:
+OPC 40001-101's `ResultReadyEventType` and OPC 40001-2's
+`ZeroPointAdjustmentEventType`. OPC 10000-3 forbids an instance of an abstract
+type, and a client filtering on a concrete `EventType` never sees an event
+reported with an abstract one — so a server that means to publish them has to
+derive a concrete subtype of its own.
+
+[`MachineryConcreteEventTypes`](../src/Opc.Ua.Machinery.Server/MachineryConcreteEventTypes.cs)
+mints one per node manager into the application-owned instance namespace and
+every object reporting that event shares it; deriving one per instance would
+multiply types a client has to know about for no gain. Both the
+`TypeDefinitionId` and the `EventType` field are set, because the second is
+what an event filter actually selects on.
+`Isa95NodeManager.CreateV2StatusEventTypeAsync` does the same for the ISA-95
+job-order status event.
+
+The client side mirrors it. An `OfType` filter on the abstract type still
+selects the subtype — that is what `OfType` means — but the generated decoder
+registry is keyed by the exact event type, so
+[`MachineryClient.Events`](../src/Opc.Ua.Machinery.Client/MachineryClient.Events.cs)
+re-decodes against the declared abstract type once the session's type cache
+confirms the subtype relationship.
+
+## State machines are server-driven
+
+Both OPC 40001-1 state machines — `MachineryItemState_StateMachineType` with
+`Executing` / `NotExecuting` / `NotAvailable` / `OutOfService`, and
+`MachineryOperationModeStateMachineType` with `None` / `Maintenance` / `Setup` /
+`Processing` — declare four states and sixteen transitions each, including the
+self-transitions. **Neither declares a cause method.** The whole Machinery
+NodeSet contains no `UAMethod` at all, so a client can never request a
+transition.
+
+The server surface follows: `IMachineryItemStateController.SetStateAsync` and
+`IMachineryOperationModeController.SetModeAsync`, reachable from the machine
+handle. There is deliberately no `WithCause`.
+
+```csharp
+await press.ItemState!.SetStateAsync(MachineryItemStateValue.Executing);
+await press.OperationMode!.SetModeAsync(MachineryOperationModeValue.Processing);
+```
+
+The state and transition tables live in
+[`MachineryStateMachineTables`](../src/Opc.Ua.Machinery.Server/StateMachines/MachineryStateMachineTables.cs),
+spelled out from the generated `*TypeIds` constants — the generator emits these
+two types as plain `FiniteStateMachineState` subclasses without the stack's
+`StateTable` / `TransitionTable` / `TransitionMappings` overrides, so the
+stack's own `SetState` would write nothing. The driver still invokes the
+machine's `OnBeforeTransition` / `OnAfterTransition` delegates around the
+variable update, which is exactly where `StateMachineBuilder.For(...)` installs
+its guards and observers, so the repository's state-machine lifecycle surface
+keeps working.
+
+## Client
+
+`MachineryClient` starts at the `Machines` folder, so it needs no configured
+NodeIds and works against a server it has never seen.
+
+| Concern | API |
+| --- | --- |
+| Discovery | `EnumerateMachinesAsync`, `DiscoverMachinesAsync`, `EnumerateComponentsAsync`, `EnumerateBuildingBlocksAsync` |
+| Identification | `ReadIdentificationAsync` — one `TranslateBrowsePaths` plus one batched `Read` |
+| State | `ItemStateAsync` / `OperationModeAsync` return the generated FSM proxies; `GetItemStateAsync` / `ObserveItemStateAsync` wrap them |
+| Health | `ReadDeviceHealthAsync` |
+| Counters | `ReadOperationCountersAsync`, `ReadLifetimeCountersAsync` |
+| Equipment | `EnumerateEquipmentAsync` — including `EquipmentLife` |
+| Process values | `EnumerateProcessValuesAsync`, `ReadProcessValueAsync`, `ZeroPointAdjustmentAsync`, `ObserveZeroPointAdjustmentsAsync` |
+| Energy | `ResolveConsumptionAsync`, `EnumerateEnergyResourcesAsync`, `ReadMainMeteringPointAsync`, `ReadMeteringPointAsync` |
+| Jobs | `JobManagementAsync` returns the ISA-95 `Isa95JobControlV2Client` |
+| Results | `ResultManagementAsync`, `DownloadResultAsync`, `ReadPublishedResultsAsync`, `ObserveResultsAsync` |
+| Notifications | `ResolveNotificationsAsync`, `ObserveNotificationsAsync` |
+| Device Integration | `Topology` — for a machine that is also a DI device |
+
+Process values are found by type definition rather than by browse path:
+OPC 40001-2 does not fix where they hang — its examples put them on a sensor
+component, on the machine, and below `Monitoring` — so every object below the
+item whose type is `ProcessValueType` counts.
+
+State observation rides the generated `*StateMachineTypeClient` proxies, which
+inherit `GetCurrentFiniteStateAsync`, `ObserveFiniteTransitionsAsync` and
+`WaitForStateAsync` from `FiniteStateMachineTypeClient` — so a vendor subtype of
+either state machine is observed the same way. See
+[StateMachines.md](StateMachines.md).
+
+Constructing the client registers the OPC 40001-101 structured types with the
+session's encodeable factory, so `GetLatestResult` decodes into
+`ResultDataType` instead of an opaque `ExtensionObject`.
+
+## Conformance matrix
+
+Status key: ✅ implemented and tested · 📄 static NodeSet structure only ·
+🔲 optional per the published modelling rule · ❌ not shipped.
+
+Conformance units are advertised at runtime, not statically. The series has two
+kinds of unit and the manager answers them differently:
+
+- a **type-exposure** unit — "the server exposes this type and all its
+  supertypes" — is satisfied by loading the model, so it follows
+  `MachineryParts`;
+- every other unit talks about instances, methods or references, and is
+  reported only once a build actually materialised **and** wired the structure
+  behind it.
+
+A server that builds no machine therefore advertises nothing but
+`Machinery Find Machines` and whatever types its parts loaded.
+
+### OPC 40001-1 building blocks
+
+| Area | Static | Runtime | Source | Tests |
+|---|---|---|---|---|
+| `Machines` folder organized from `Objects` (`Machinery Find Machines`) | ✅ | ✅ | [`MachineryNodeManager`](../src/Opc.Ua.Machinery.Server/MachineryNodeManager.cs) | `MachineryModelLoadingTests` |
+| `MachineryBuildingBlocks` organizer (`Machinery Building Block Organization`) | ✅ | ✅ | [`MachineryItemBlocks`](../src/Opc.Ua.Machinery.Server/Builders/MachineryBlockBuilders.cs) | `MachineryBuildingBlockTests` |
+| Machine identification (`Machinery Machine Identification`) | ✅ | ✅ | [`MachineryBlockBuilders`](../src/Opc.Ua.Machinery.Server/Builders/MachineryBlockBuilders.cs) | `MachineBuilderTests` |
+| Component identification and discovery (`Machinery Component Identification`, `Machinery Find Components of Machines`) | ✅ | ✅ | same | `MachineBuilderTests` |
+| Monitoring add-in (`Machinery Monitoring`) | ✅ | ✅ | same | `MachineBuilderTests` |
+| `Monitoring/Health` with DI `DeviceHealth` and `DeviceHealthAlarms` | ✅ | ✅ | [`MachineryHealthBuilder`](../src/Opc.Ua.Machinery.Server/Builders/MachineryBlockBuilders.cs) | `MachineBuilderTests`; `MachineryEndToEndTests` |
+| Item state machine, four states / sixteen transitions, no causes (`Machinery MachineryItem State`) | ✅ | ✅ | [`MachineryStateMachineTables`](../src/Opc.Ua.Machinery.Server/StateMachines/MachineryStateMachineTables.cs) | `MachineBuilderTests`; `MachineryStateMachineTests` |
+| Operation-mode state machine (`Machinery Operation Mode`) | ✅ | ✅ | same | same |
+| Operation counters (`Machinery Operation Counter`) | ✅ | ✅ | [`MachineryBlockBuilders`](../src/Opc.Ua.Machinery.Server/Builders/MachineryBlockBuilders.cs) | `MachineBuilderTests`; `MachineryEndToEndTests` |
+| Lifetime counters (`Machinery Lifetime Counter`) | ✅ | ✅ | same | `MachineBuilderTests` |
+| Machinery equipment (`Machinery MachineryEquipment`) incl. `EquipmentLife` | ✅ | ✅ | same | `MachineBuilderTests`; `MachineryEndToEndTests` |
+| Notifications (`Machinery Notifications`) with a publish seam | ✅ | ✅ | [`MachineryNotificationsBuilder`](../src/Opc.Ua.Machinery.Server/Builders/MachineryNotificationsBuilder.cs) | `MachineBuilderTests` |
+| Stacklight over OPC 10000-200 IA | ✅ | 🔲 | [`MonitoringBuilder`](../src/Opc.Ua.Machinery.Server/Builders/MachineryBlockBuilders.cs) | `MachineBuilderTests` |
+| Writable identification (`… Writable`, `Component Identification Mandatory`) | ✅ | ❌ not advertised — the builder publishes identification read-only | — | — |
+
+### OPC 40001-2 process values
+
+| Area | Static | Runtime | Source | Tests |
+|---|---|---|---|---|
+| `ProcessValueType` instances over the `ProcessValueVariableType` subtype (`… Base Types`, `… Analog Object Instances`) | ✅ | ✅ | [`ProcessValueBuilder`](../src/Opc.Ua.Machinery.Server/Builders/ProcessValueBuilder.cs) | `MachineryProcessValueTests`; `MachineryEndToEndTests` |
+| Setpoint (`… Base SetpointType`, `… Base Process Value Setpoint`) | ✅ | ✅ | same | `MachineryProcessValueTests` |
+| Limits on the signal (`… Limits Base`) | ✅ | ✅ | same | `MachineryProcessValueTests` |
+| Exclusive limit alarm driven by the value (`… Limits Alarm`, `… Limits Alarm Object`) | ✅ | ✅ | [`MachineryProcessValueAlarm`](../src/Opc.Ua.Machinery.Server/Builders/MachineryProcessValueAlarm.cs) | `MachineryProcessValueTests` |
+| Deviations on the setpoint (`… Deviation Base`, `… Deviation AutoAdjustment`, `… Deviation Sensitivity`) | ✅ | ✅ | [`ProcessValueBuilder`](../src/Opc.Ua.Machinery.Server/Builders/ProcessValueBuilder.cs) | `MachineryProcessValueTests` |
+| Exclusive deviation alarm against the setpoint (`… Deviation Alarm`, `… Deviation Alarm Object`) | ✅ | ✅ | [`MachineryProcessValueAlarm`](../src/Opc.Ua.Machinery.Server/Builders/MachineryProcessValueAlarm.cs) | `MachineryProcessValueTests` |
+| `PercentageValue` kept in step with the range (`… Percentage Value`) | ✅ | ✅ | [`ProcessValueBuilder`](../src/Opc.Ua.Machinery.Server/Builders/ProcessValueBuilder.cs) | `MachineryProcessValueTests` |
+| `Status` and `AlarmSuppression` (`… Monitoring`, `… AlarmSuppression`) | ✅ | ✅ | same | `MachineryProcessValueTests` |
+| `ZeroPointAdjustment` method and its event (`… Base EventTypes`, `… ZeroPointAdjustment Events`) | ✅ | ✅ | same | `MachineryProcessValueTests`; `MachineryEndToEndTests` |
+| Simulation (`3:PA-DIM AnalogSignalVariable Simulation`) | ✅ | 🔲 | model only — the PA-DIM simulation members are untouched | — |
+| Device object (`… Device Object`, `… Simple Device Info`) | ✅ | ❌ not advertised — the builder does not compose PA-DIM's `ISignalSet` | — | — |
+
+### OPC 40001-3 job management
+
+| Area | Static | Runtime | Source | Tests |
+|---|---|---|---|---|
+| `JobManagement` as an AddIn under the organizer, composing ISA-95 Job Control V2 (`Machinery Job Management Base`, `… Minimum String Length`) | ✅ | ✅ | [`JobManagementBuilder`](../src/Opc.Ua.Machinery.Server/Builders/JobManagementBuilder.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
+| Job results (`Machinery Job Management Result Base`) | ✅ | ✅ | same | `MachineryPartsBuilderTests` |
+| The predefined `Planned …` / `Result …` job-order parameters | ✅ | 📄 | model only — the parameters travel through the ISA-95 payload untouched | — |
+
+### OPC 40001-4 energy
+
+| Area | Static | Runtime | Source | Tests |
+|---|---|---|---|---|
+| Resource folders below `Monitoring/Consumption` (`Machinery Energy Base Structure`) | ✅ | ✅ | [`MachineryEnergyBuilder`](../src/Opc.Ua.Machinery.Server/Builders/MachineryEnergyBuilder.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
+| A `Main` metering point per resource (`Machinery Energy Main grouping`) | ✅ | ✅ | same | same |
+| `INonElectricalEnergyType` on a metering point (`… Non Electrical Base`) | ✅ | ✅ | same | same |
+| Volume- and mass-flow interfaces (`… Volume Flow`, `… Mass Flow`) | ✅ | ✅ | same | `MachineryPartsBuilderTests` |
+| `Contains` from `Main` to a sub-meter (`Machinery Energy Contains`) | ✅ | ✅ | same | same |
+| Electricity | ✅ | ✅ | same — OPC 40001-4 defers it to OPC 34100's own interfaces, which `WithInterface` and `AddMeasurementValue` attach | `MachineryEndToEndTests` |
+
+### OPC 40001-101 results
+
+| Area | Static | Runtime | Source | Tests |
+|---|---|---|---|---|
+| Result types (`Machinery-Result Types`) | ✅ | ✅ | [`MachineryResultManagementBinder`](../src/Opc.Ua.Machinery.Server/Results/MachineryResultManagementBinder.cs) | `MachineryPartsBuilderTests` |
+| The five optional methods (`… GetLatestResult`, `… GetResultById`, `… GetResultsFiltered`, `Machinery Result AcknowledgeResults`) | ✅ | ✅ | same | `MachineryPartsBuilderTests` |
+| `GenerateFileForRead` download path with session-bound handles, cap and timeout (`… ResultFiles`) | ✅ | ✅ | [`MachineryResultTransferManager`](../src/Opc.Ua.Machinery.Server/Results/MachineryResultTransferManager.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
+| Result variables in the `Results` folder (`… ResultVariables`) | ✅ | ✅ | [`MachineryResultVariables`](../src/Opc.Ua.Machinery.Server/Results/MachineryResultVariables.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
+| Result-ready events with a concrete event type (`… ResultEvents`) | ✅ | ✅ | [`MachineryResultManagementBinder`](../src/Opc.Ua.Machinery.Server/Results/MachineryResultManagementBinder.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
+| Predefined result metadata (`… PredefinedResultMetaData`) | ✅ | ❌ not advertised — the store decides what metadata a result carries | — | — |
+| Stand-alone result server without DI or the machine model | ✅ | ✅ | [`MachineryResultNodeManager`](../src/Opc.Ua.Machinery.Server/MachineryResultNodeManager.cs) | `MachineryResultServerTests` |
+| Durable result store | ❌ not shipped (in-memory only) | — | — | — |
+
+### Client and hosting
+
+| Area | Static | Runtime | Source | Tests |
+|---|---|---|---|---|
+| Discovery, identification, components, building blocks | — | ✅ | [`MachineryClient`](../src/Opc.Ua.Machinery.Client/MachineryClient.cs) | `MachineryClientTests`; `MachineryEndToEndTests` |
+| State observation over both state machines | — | ✅ | [`MachineryClient.StateMachines`](../src/Opc.Ua.Machinery.Client/MachineryClient.StateMachines.cs) | same |
+| Process values, zero-point adjustment | — | ✅ | [`MachineryClient.ProcessValues`](../src/Opc.Ua.Machinery.Client/MachineryClient.ProcessValues.cs) | `MachineryEndToEndTests` |
+| Energy resources and metering points | — | ✅ | [`MachineryClient.Energy`](../src/Opc.Ua.Machinery.Client/MachineryClient.Energy.cs) | same |
+| Counters, equipment, device health | — | ✅ | [`MachineryClient.Counters`](../src/Opc.Ua.Machinery.Client/MachineryClient.Counters.cs) | same |
+| Job control | — | ✅ | [`MachineryClient.Accessors`](../src/Opc.Ua.Machinery.Client/MachineryClient.Accessors.cs) | same |
+| Result download, published result variables, result and zero-point events | — | ✅ | [`MachineryClient.Events`](../src/Opc.Ua.Machinery.Client/MachineryClient.Events.cs) | same |
+| Server/client DI wiring (`AddMachinery`, `AddMachineryResults`, `AddMachineryClient`) | — | ✅ | [`OpcUaServerMachineryBuilderExtensions`](../src/Opc.Ua.Machinery.Server/Hosting/OpcUaServerMachineryBuilderExtensions.cs) | `MachineryHostingTests`; `MachineryAotTests` |
+| Facet URIs on `ServerProfileArray` | — | ✅ | [`ServerProfiles`](../src/Opc.Ua.Machinery.Server/ConformanceUnit.cs) | `MachineryEndToEndTests` reads them back over the wire |
+
+### Where the facet URIs come from
+
+Each URI in [`ServerProfiles`](../src/Opc.Ua.Machinery.Server/ConformanceUnit.cs)
+is the published value from the "Profile URIs" table of the matching part, at
+the exact model version this repository vendors. The three URI shapes are the
+specifications' own and are reproduced verbatim, because conformance tooling
+matches a facet URI literally:
+
+| Part | Shape | Example |
+| --- | --- | --- |
+| 40001-1, -3, -101 | `…/UA-Profile/Machinery/…`, no trailing slash | `http://opcfoundation.org/UA-Profile/Machinery/Server/State` |
+| 40001-2 | `…/UA/Machinery/ProcessValues/…`, **with** a trailing slash | `http://opcfoundation.org/UA/Machinery/ProcessValues/Server/Base/` |
+| 40001-4 | `…/UA-Profile/Machinery/Energy/…` | `http://opcfoundation.org/UA-Profile/Machinery/Energy/Server/Base` |
+
+A facet is advertised only when every conformance unit the specification marks
+mandatory for it, **and that this library is responsible for**, was
+materialised and wired. The base-server units each facet also inherits —
+address space, view, attribute, method and event subscription — are the stack's
+to report and already appear in `base.ServerProfiles`.
 
 ## Model sources, identifier tables and repairs
 
@@ -138,10 +761,11 @@ documents for OPC-10030.
 
 ## Generator gaps found while adding these models
 
-Two defects in the cross-assembly dependency machinery only surfaced once a
-model consumed DI through a referenced assembly's payload rather than through
-`<AdditionalFiles>`. Both are fixed; both are worth knowing about when adding
-the next companion specification.
+Three defects in the cross-assembly dependency machinery only surfaced once a
+model consumed a dependency through a referenced assembly's payload rather
+than through `<AdditionalFiles>`. Two are fixed in the generator; the third is
+worked around in this library and is described last. All three are worth
+knowing about when adding the next companion specification.
 
 **A VariableType's data type restriction was not carried.** `DependencyNode`
 recorded base type, numeric id, abstractness, data type fields and children, but
@@ -167,8 +791,41 @@ re-declares an inherited method emitted a reference to an
 `OwnerType_MethodMethodState` class the producer never generated. OPC 34100 ECM
 re-declaring the DI `LockingServices` methods is the first model to hit it.
 
+**An inherited child loses its reference type and its browse-name namespace —
+open.** `DependencyChild` carries the child's browse name as a bare string and
+no reference type, so when a derived type in a consuming model is instantiated
+*on its own*, the generator emits the inherited child with
+`ReferenceTypeId = NodeId.Null` and the browse name qualified with the
+declaring model's namespace. Both are wrong, and the first is not cosmetic: a
+node with a null reference type is in the node tree but produces no reference
+in a filtered Browse, so no client ever sees it.
+
+Two OPC 40001-2 members are affected, both inherited from OPC 30081 PA-DIM:
+
+| Member | Reference type | Browse name |
+| --- | --- | --- |
+| `ProcessValueType.SignalTag` | lost | correct (`3:SignalTag`) |
+| `ProcessValueVariableType.EngineeringUnits` | lost | wrong (PA-DIM, should be namespace 0) |
+
+The same member reached the other way — `ProcessValueType.AnalogSignal`'s
+`EngineeringUnits`, generated as a grandchild of the object type — is correct,
+which is what makes the inconsistency visible. `SignalTag` is mandatory, and
+`EngineeringUnits` in namespace 0 is where a Data Access client reads the unit,
+so both matter for the OPC 40001-2 base facet.
+
+`ProcessValueBuilder.RepairInheritedPadimMembers` restores both at build time,
+because `ProcessValueBuilder` deliberately instantiates
+`ProcessValueVariableType` on its own to substitute the richer subtype into the
+`AnalogSignal` slot — the affected path. The repair is a stop-gap: the payload
+needs a browse-name namespace and a reference type on `DependencyChild`, behind
+a flag, the way the VariableType restriction was added. Only the in-process
+tests missed it; the end-to-end test over `opc.tcp` is what surfaced it,
+because a filtered Browse is where a null reference type finally shows.
+
 ## See also
 
+- [Machinery samples](../samples/Machinery/README.md) — a simulated press that
+  exercises all five parts, and a client that walks it
 - [Device Integration (DI) developer guide](DeviceIntegration.md)
 - [ISA-95 developer guide](ISA95.md) — OPC 40001-3 sits on Job Control V2
 - [Cross-assembly model dependencies](ModelDependencies.md)

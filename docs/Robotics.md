@@ -36,13 +36,15 @@ Robot Intent without pulling in OPC 40010, OPC 10000-100 DI, or anything else.
 
 | Package | Purpose |
 |---|---|
-| `OPCFoundation.NetStandard.Opc.Ua.Robotics` | Source-generated OPC 40010/IA and draft Robot Intent models, generated NodeIds/DataTypes/ObjectType clients, `ArrayOf<T>`-based common contracts shared by client and server, the `IIntentExecutor` contract, `IntentExecution`, `IIntentProgress`, `IntentOutcome`, `PoseMath` and `FrameTree`. |
+| `OPCFoundation.NetStandard.Opc.Ua.Robotics` | Source-generated OPC 40010 and draft Robot Intent models, generated NodeIds/DataTypes/ObjectType clients, `ArrayOf<T>`-based common contracts shared by client and server, the `IIntentExecutor` contract, `IntentExecution`, `IIntentProgress`, `IntentOutcome`, `PoseMath` and `FrameTree`. |
+| `OPCFoundation.NetStandard.Opc.Ua.IA` | The OPC 10000-200 Industrial Automation model OPC 40010 builds on. It used to be generated inside `Opc.Ua.Robotics`; it moved to its own package when OPC 40001 Machinery also needed it, because two assemblies generating the same model URI under the same C# prefix collide at the consumer. The generated types still live in the `Opc.Ua.IA` namespace and `AddOpcUaIA` is unchanged. |
 | `OPCFoundation.NetStandard.Opc.Ua.Robotics.Server` | Stock Robotics node manager, Robot Intent node manager, model providers, hosting extensions (`AddRobotics`, `AddRobotIntent`, `ConfigureRobotics`, `ConfigureRobotIntent`), validated fluent topology builders, `IntentControllerHost`, safety binding, real-time channel declarations and facet calculation. |
 | `OPCFoundation.NetStandard.Opc.Ua.Robotics.Client` | Continuation-safe, subtype-aware discovery of Robotics instances over the DI client, Robotics type classification, Robot Intent discovery, the awaitable operation handle, command authority, real-time-channel leases, missions and `RobotIntentBuilder`. |
 
 ```mermaid
 graph TD
     Di["Opc.Ua.Di<br/>Device Integration base model"]
+    Ia["Opc.Ua.IA<br/>OPC 10000-200 Industrial Automation"]
     Model["Opc.Ua.Robotics<br/>OPC 40010 + Robot Intent model"]
     Server["Opc.Ua.Robotics.Server<br/>node managers + builders + IntentControllerHost"]
     Client["Opc.Ua.Robotics.Client<br/>discovery + RobotIntentClient"]
@@ -50,7 +52,8 @@ graph TD
     Executor["IIntentExecutor"]
     Safety["IRobotIntentSafetySource"]
 
-    Di --> Model
+    Di --> Ia
+    Ia --> Model
     Model --> Server
     Model --> Client
     Client --> Mcp
@@ -61,6 +64,12 @@ graph TD
 Generated OPC 40010 model types stay in the specification namespaces `Opc.Ua.Robotics` and
 `Opc.Ua.IA`; hand-written APIs compose the generated NodeStates, factories,
 enums, and ObjectType clients instead of replacing or inheriting from them.
+
+`Opc.Ua.IA` is shared with [OPC 40001 Machinery](Machinery.md), which reaches
+into it at exactly one place — `MonitoringType/Status/Stacklight`. A server
+cannot host `AddRobotics()` and `AddMachinery()` together, because both own the
+Device Integration address space; see
+[coexistence](DeviceIntegration.md#coexisting-with-companion-models-that-own-the-di-address-space).
 
 The generated `Opc.Ua.Robotics.Namespaces` and `Opc.Ua.IA.Namespaces` classes
 expose the model namespace URIs, and `RoboticsModel` adds namespace-safe
