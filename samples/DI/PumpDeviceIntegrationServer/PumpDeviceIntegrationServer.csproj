@@ -17,6 +17,7 @@
     <ProjectReference Include="..\..\..\src\Opc.Ua.Server\Opc.Ua.Server.csproj" />
     <ProjectReference Include="..\..\..\src\Opc.Ua.Di\Opc.Ua.Di.csproj" />
     <ProjectReference Include="..\..\..\src\Opc.Ua.Di.Server\Opc.Ua.Di.Server.csproj" />
+    <ProjectReference Include="..\..\..\src\Opc.Ua.Machinery\Opc.Ua.Machinery.csproj" />
     <ProjectReference Include="..\..\..\src\Opc.Ua.OpenUsd\Opc.Ua.OpenUsd.csproj" />
     <ProjectReference Include="..\..\..\src\Opc.Ua.OpenUsd.Server\Opc.Ua.OpenUsd.Server.csproj" />
   </ItemGroup>
@@ -36,25 +37,24 @@
     <EmbeddedResource Include="Assets\Plant.usda"><LogicalName>Plant.usda</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="Assets\pump.usda"><LogicalName>pump.usda</LogicalName></EmbeddedResource>
   </ItemGroup>
-  <!-- Machinery + Pumps NodeSet2 XMLs are source-generated locally;
-       no library refs needed. The generator emits typed classes,
-       NodeId tables, and AddOpcUaMachinery / AddOpcUaPumps extension
-       methods in the Opc.Ua.Machinery and Opc.Ua.Pumps namespaces
-       (internal to this assembly). Cross-namespace type references
-       to DI types resolve via the [assembly: ModelDependencyAttribute]
-       carried in the Opc.Ua.Di assembly — no DI NodeSet2 XML
-       needed here.
+  <!-- The Pumps NodeSet2 XML is source-generated locally. The generator emits
+       typed classes, a NodeId table and the AddOpcUaPumps extension method in
+       the Opc.Ua.Pumps namespace, internal to this assembly.
 
-       The matching *.NodeSet2.csv files (alongside the XML) are
-       picked up by the source generator as the stable NodeId tables.
-       Without them the generator would assign synthetic NodeIds at
-       compile time, breaking byte-stable wire formats for clients
-       that cache NodeIds across builds. -->
+       Machinery is no longer generated here: this sample used to carry a
+       reduced copy of the Machinery NodeSet because the full one did not
+       survive the model generator, and that defect is fixed. The
+       ProjectReference on src/Opc.Ua.Machinery now supplies the full OPC
+       40001-1 1.04.1 model - the same 180 nodes every other Machinery consumer
+       sees - and the Pumps model resolves its Machinery type references
+       through that assembly's [ModelDependencyAttribute] payload, the way it
+       already resolved its DI references.
+
+       The matching Opc.Ua.Pumps.NodeSet2.csv (alongside the XML) is picked up
+       as the stable NodeId table. Without it the generator would assign
+       synthetic NodeIds at compile time, breaking byte-stable wire formats for
+       clients that cache NodeIds across builds. -->
   <ItemGroup>
-    <AdditionalFiles Include="Model\Opc.Ua.Machinery.NodeSet2.xml">
-      <ModelSourceGeneratorPrefix>Opc.Ua.Machinery</ModelSourceGeneratorPrefix>
-    </AdditionalFiles>
-    <AdditionalFiles Include="Model\Opc.Ua.Machinery.NodeSet2.csv" />
     <AdditionalFiles Include="Model\Opc.Ua.Pumps.NodeSet2.xml">
       <ModelSourceGeneratorPrefix>Opc.Ua.Pumps</ModelSourceGeneratorPrefix>
     </AdditionalFiles>

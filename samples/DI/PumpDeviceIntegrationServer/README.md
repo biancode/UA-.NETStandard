@@ -164,7 +164,7 @@ sequenceDiagram
     Host->>DI: ConfigureDevicesFor<PumpNodeManager>(...)
     DI->>Factory: CreateAsync(server, configuration)
     Factory->>NM: new PumpNodeManager(.., postSetupRunner, options)
-    NM->>NM: LoadPredefinedNodesAsync<br/>AddOpcUaDi + Machinery + Pumps
+    NM->>NM: LoadPredefinedNodesAsync<br/>AddOpcUaDi + IA + Machinery + Pumps
     NM->>NM: ConfigureAsync(builder, ct)
     loop for each of N pumps
         NM->>NM: ConfigureInstancesAsync → Pump_n (PumpType)
@@ -449,7 +449,7 @@ workflow on every push to `master` and on manual dispatch.
 | Feature | Where |
 |---------|-------|
 | `AddOpcUa().AddServer(...).AddNodeManager<T>()` hosting | `Program.cs` |
-| Multi-model composition (DI library + locally source-generated Machinery + Pumps) | `PumpNodeManager.cs` `LoadPredefinedNodesAsync` |
+| Multi-model composition (DI, IA and Machinery libraries + locally source-generated Pumps) | `PumpNodeManager.cs` `LoadPredefinedNodesAsync` |
 | Optional nameplate materialisation via generator-emitted `AddXxx(context)` helpers across three namespaces (DI / Machinery / Pumps) | `PumpNodeManager.cs` `MaterialiseNameplate` |
 | Identification properties via `WithProperty(name, value)` | `PumpNodeManager.Configure.cs` `WithIdentification` |
 | Optional-child materialisation via generator-emitted `AddXxx(context)` helpers (Operational / Measurements / Events / SupervisionProcessFluid / SupervisionPumpOperation / Maintenance) | `PumpNodeManager.cs` `MaterialisePumpOptionalChildren` |
@@ -482,9 +482,9 @@ PumpDeviceIntegrationServer/
 │                                       # configured pump) + ProductionLine demo
 ├── PumpDatasheet.cs                    # DATASHEET.md as compile-time constants
 ├── DATASHEET.md                        # official-style PumpX-2000 product datasheet
-├── PumpDeviceIntegrationServer.csproj  # ProjectReference to Opc.Ua.Di model lib
-│                                       # AdditionalFiles for Machinery + Pumps
-│                                       # NodeSet2 (consumed by source generator)
+├── PumpDeviceIntegrationServer.csproj  # ProjectReferences to the Opc.Ua.Di and
+│                                       # Opc.Ua.Machinery model libs; AdditionalFiles
+│                                       # for the Pumps NodeSet2 (source generator)
 ├── Assets/
 │   ├── Plant.usda                      # stage master (P101 is the authoring
 │   │                                   # master, deactivated so only the
@@ -492,31 +492,38 @@ PumpDeviceIntegrationServer/
 │   ├── pump.usda                       # generated component asset, one per pump
 │   └── generate_pump_assets.py         # regenerates it from the P101 master
 ├── Model/
-│   ├── Opc.Ua.Machinery.NodeSet2.xml   # AdditionalFiles — build-time only
 │   └── Opc.Ua.Pumps.NodeSet2.xml       # AdditionalFiles — build-time only
 └── Properties/AssemblyInfo.cs
 ```
 
-The `Opc.Ua.Di` model library is consumed as a project reference (its
-types live under the `Opc.Ua.Di` namespace and are source-generated
-from the ModelDesign XML). Cross-namespace references from Machinery
-and Pumps to DI types resolve through the
-`[assembly: ModelDependencyAttribute]` carried in the `Opc.Ua.Di`
-assembly — no DI NodeSet2 XML needed in this project. The unified
-attribute carries the compact type-table payload that the consumer's
-source generator imports at compile time; see
-[ModelDependencies.md](../../../docs/ModelDependencies.md) for the wire
-format and consumer-side flow.
+The `Opc.Ua.Di` and `Opc.Ua.Machinery` model libraries are consumed as
+project references (their types live under the `Opc.Ua.Di` and
+`Opc.Ua.Machinery` namespaces and are source-generated inside those
+packages). Cross-namespace references from Pumps to DI and Machinery
+types resolve through the `[assembly: ModelDependencyAttribute]` each
+of those assemblies carries — no DI or Machinery NodeSet2 XML is needed
+in this project. The unified attribute carries the compact type-table
+payload that the consumer's source generator imports at compile time;
+see [ModelDependencies.md](../../../docs/ModelDependencies.md) for the
+wire format and consumer-side flow.
 
-The Machinery and Pumps NodeSet2 XMLs are **source-generated locally
-inside this assembly** via the `<AdditionalFiles>` plumbing in the
-`.csproj`. The generator emits typed `*State` classes, NodeId tables,
-and the `AddOpcUaMachinery` / `AddOpcUaPumps` extension methods that
-`LoadPredefinedNodesAsync` calls. No runtime XML loading happens — the
-`Model/` folder is a build-time input only. Consumer assemblies that
-want to reference Machinery or Pumps the same way they reference
-`Opc.Ua.Di` should source-generate against the model XML inside their
-own assembly using the same `<AdditionalFiles>` pattern.
+This sample used to source-generate a **reduced** Machinery NodeSet of
+its own, because the full official set did not survive the model
+generator. That defect is fixed, and the sample now consumes the shared
+`Opc.Ua.Machinery` package — the full OPC 40001-1 1.04.1 model, 180
+nodes and 15 ObjectTypes rather than the 47 nodes the reduced copy
+carried. Existing NodeIds did not move: the reduction only ever deleted
+nodes, it never renumbered them. One thing did change: the full model
+types `MonitoringType/Status/Stacklight` with the OPC 10000-200
+`BasicStacklightType`, so `PumpNodeManager` now registers the IA
+namespace and loads the IA model as well.
+
+The Pumps NodeSet2 XML is still **source-generated locally inside this
+assembly** via the `<AdditionalFiles>` plumbing in the `.csproj`. The
+generator emits typed `*State` classes, a NodeId table, and the
+`AddOpcUaPumps` extension method that `LoadPredefinedNodesAsync` calls.
+No runtime XML loading happens — the `Model/` folder is a build-time
+input only.
 
 The sample intentionally does not add `GeneratesEvent` to pump instances.
 OPC 10000-3 restricts that reference to ObjectType, VariableType, and Method

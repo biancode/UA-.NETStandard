@@ -38,6 +38,7 @@ using Opc.Ua;
 using Opc.Ua.Di;
 using Opc.Ua.Di.Server;
 using Opc.Ua.Di.Server.Hosting;
+using Opc.Ua.IA;
 using Opc.Ua.Machinery;
 using Opc.Ua.OpenUsd;
 using Opc.Ua.Pumps;
@@ -99,6 +100,11 @@ namespace Pumps
                   postSetupRunner,
                   Opc.Ua.Pumps.Namespaces.Pumps,
                   Opc.Ua.Machinery.Namespaces.Machinery,
+                  // OPC 40001-1 types MonitoringType/Status/Stacklight with the
+                  // OPC 10000-200 BasicStacklightType, so the full Machinery
+                  // model reaches into IA. The reduced Machinery copy this
+                  // sample used to carry had that edge stripped out.
+                  Opc.Ua.IA.Namespaces.IA,
                   Opc.Ua.OpenUsd.Namespaces.OpenUSD)
         {
             m_options = options?.Value ?? new PumpDeviceIntegrationOptions();
@@ -171,6 +177,10 @@ namespace Pumps
             // so a direct chain in dependency order is sufficient.
             var nodes = new NodeStateCollection();
             nodes.AddOpcUaDi(context);
+            // IA before Machinery: OPC 40001-1's Stacklight is typed by the
+            // OPC 10000-200 BasicStacklightType, so the IA type nodes have to
+            // be in the address space for that type definition to resolve.
+            nodes.AddOpcUaIA(context);
             nodes.AddOpcUaMachinery(context);
             nodes.AddOpcUaPumps(context);
             nodes.AddOpcUaOpenUsd(context);

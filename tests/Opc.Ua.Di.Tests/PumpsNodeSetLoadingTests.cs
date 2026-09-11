@@ -34,10 +34,11 @@ using Opc.Ua;
 namespace Opc.Ua.Di.Tests
 {
     /// <summary>
-    /// Tests for the source-generated Machinery and Pumps models inside
-    /// PumpDeviceIntegrationServer. Verifies that the generator emitted the expected
-    /// namespace constants, extension methods, and that the loader produces
-    /// a non-empty predefined-node tree.
+    /// Tests for the source-generated Pumps model inside
+    /// PumpDeviceIntegrationServer, and for the Machinery model it now consumes
+    /// from Opc.Ua.Machinery. Verifies that the generator emitted the expected
+    /// namespace constants and extension methods, and that neither model is
+    /// loaded from an embedded NodeSet2 at runtime.
     /// </summary>
     [TestFixture]
     [Category("Pumps")]
@@ -46,10 +47,18 @@ namespace Opc.Ua.Di.Tests
         [Test]
         public void MachineryNamespaceUriConstantIsEmitted()
         {
-            Assembly assembly = typeof(global::Pumps.PumpNodeManager).Assembly;
+            // Machinery is no longer generated inside the sample: the sample
+            // migrated off its reduced NodeSet copy onto the shared
+            // Opc.Ua.Machinery package, so the constants live there.
+            Assembly assembly = typeof(global::Opc.Ua.Machinery.Namespaces).Assembly;
             System.Type? ns = assembly.GetType("Opc.Ua.Machinery.Namespaces");
             Assert.That(ns, Is.Not.Null,
                 "The source generator must emit Opc.Ua.Machinery.Namespaces.");
+            Assert.That(
+                typeof(global::Pumps.PumpNodeManager).Assembly.GetType(
+                    "Opc.Ua.Machinery.Namespaces"),
+                Is.Null,
+                "The sample must not generate a second copy of the Machinery model.");
         }
 
         [Test]
@@ -64,7 +73,7 @@ namespace Opc.Ua.Di.Tests
         [Test]
         public void AddOpcUaMachineryExtensionMethodIsEmitted()
         {
-            Assembly assembly = typeof(global::Pumps.PumpNodeManager).Assembly;
+            Assembly assembly = typeof(global::Opc.Ua.Machinery.Namespaces).Assembly;
             System.Type? ext = assembly.GetType(
                 "Opc.Ua.Machinery.OpcUaMachineryExtensions");
             Assert.That(ext, Is.Not.Null,
