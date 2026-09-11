@@ -221,6 +221,22 @@ namespace Opc.Ua.SourceGeneration
                     StringId = string.IsNullOrEmpty(type.StringId) ? null : type.StringId,
                     IsAbstract = type.IsAbstract
                 };
+                if (type is VariableTypeDesign variableTypeDesign)
+                {
+                    // A consumer that types a variable with this VariableType
+                    // has to know the restriction to decide whether the
+                    // generated state class needs a template parameter. Without
+                    // it the consumer's DataTypeNode stays null and the node
+                    // state generator dereferences it (see
+                    // ModelDesignExtensions.GetNodeStateClassName).
+                    entry.DataTypeName = variableTypeDesign.DataType?.Name ?? string.Empty;
+                    entry.DataTypeNamespace =
+                        variableTypeDesign.DataType?.Namespace ?? string.Empty;
+                    entry.ValueRank = variableTypeDesign.ValueRankSpecified
+                        ? (int)variableTypeDesign.ValueRank
+                        : null;
+                }
+
                 if (type is DataTypeDesign dataType)
                 {
                     entry.IsEnumeration = dataType.IsEnumeration;
