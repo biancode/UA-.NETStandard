@@ -54,6 +54,17 @@ namespace Opc.Ua.Machinery.Tests
             context.NamespaceUris = namespaceUris;
             mock.SetupGet(session => session.MessageContext).Returns(context);
 
+            // Browser (used by MachineryClient's own browse helper, and by
+            // BrowseNext-aware fixes to it) reads these three properties the
+            // moment a Browser is attached to a session, regardless of
+            // whether pagination is ever exercised. ISession declares
+            // OperationLimits and ServerCapabilities non-nullable, so a real
+            // session always has them; this bridge must too.
+            mock.SetupGet(session => session.OperationLimits).Returns(new OperationLimits());
+            mock.SetupGet(session => session.ServerCapabilities).Returns(new ServerCapabilities());
+            mock.SetupGet(session => session.ContinuationPointPolicy)
+                .Returns(ContinuationPointPolicy.Default);
+
             mock.Setup(session => session.TranslateBrowsePathsToNodeIdsAsync(
                     It.IsAny<RequestHeader?>(),
                     It.IsAny<ArrayOf<BrowsePath>>(),

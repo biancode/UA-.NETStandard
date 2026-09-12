@@ -473,35 +473,38 @@ namespace Opc.Ua.Machinery.Client
                 yield break;
             }
 
-            var description = new BrowseDescription
+            // A raw single BrowseAsync call silently drops everything past the
+            // first continuation point on a server that paginates (a large or
+            // busy address space). Browser.BrowseAsync(NodeId, ct) already
+            // drains BrowseNext until the continuation point is exhausted, and
+            // releases it if the enumeration is cancelled midway, so this
+            // enumerator never returns a truncated child list.
+            var browser = new Browser(Session, new BrowserOptions
             {
-                NodeId = parent,
                 BrowseDirection = BrowseDirection.Forward,
                 ReferenceTypeId = Opc.Ua.Types.ReferenceTypeIds.HierarchicalReferences,
                 IncludeSubtypes = true,
-                NodeClassMask = (uint)nodeClass,
+                NodeClassMask = (int)nodeClass,
                 ResultMask = (uint)BrowseResultMask.All
-            };
+            });
 
-            BrowseResponse response = await Session
-                .BrowseAsync(
-                    requestHeader: null,
-                    view: null,
-                    requestedMaxReferencesPerNode: 0,
-                    nodesToBrowse: new[] { description }.ToArrayOf(),
-                    ct: cancellationToken)
-                .ConfigureAwait(false);
-
-            if (response.Results.Count == 0 ||
-                StatusCode.IsBad(response.Results[0].StatusCode))
+            // A bad browse status (e.g. the parent no longer exists) yields
+            // an empty enumeration rather than an exception, matching every
+            // other accessor's "return null/empty when the block is absent"
+            // contract.
+            ArrayOf<ReferenceDescription> references;
+            try
+            {
+                references = await browser.BrowseAsync(parent, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ServiceResultException ex) when (StatusCode.IsBad(ex.StatusCode))
             {
                 yield break;
             }
 
-            BrowseResult result = response.Results[0];
-            for (int ii = 0; ii < result.References.Count; ii++)
+            for (int ii = 0; ii < references.Count; ii++)
             {
-                ReferenceDescription reference = result.References[ii];
+                ReferenceDescription reference = references[ii];
                 var nodeId = ExpandedNodeId.ToNodeId(
                     reference.NodeId,
                     Session.NamespaceUris);
