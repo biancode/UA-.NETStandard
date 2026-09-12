@@ -37,8 +37,8 @@ namespace Opc.Ua.Di.Tests
 {
     /// <summary>
     /// Builds a Moq-backed <see cref="ISession"/> that dispatches
-    /// <c>TranslateBrowsePathsToNodeIdsAsync</c> and
-    /// <c>CallAsync</c> calls directly into a <see cref="DiServerFixture"/>'s
+    /// <c>TranslateBrowsePathsToNodeIdsAsync</c>, <c>CallAsync</c>, and
+    /// <c>ReadAsync</c> calls directly into a <see cref="DiServerFixture"/>'s
     /// in-process address space. Lets client-side helpers be exercised
     /// end-to-end without standing up a real TCP server.
     /// </summary>
@@ -93,7 +93,54 @@ namespace Opc.Ua.Di.Tests
                     };
                 });
 
+            // ---- ReadAsync ----
+            mock.Setup(s => s.ReadAsync(
+                    It.IsAny<RequestHeader?>(),
+                    It.IsAny<double>(),
+                    It.IsAny<TimestampsToReturn>(),
+                    It.IsAny<ArrayOf<ReadValueId>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((RequestHeader? _, double _, TimestampsToReturn _,
+                    ArrayOf<ReadValueId> nodes, CancellationToken _) =>
+                {
+                    var results = new DataValue[nodes.Count];
+                    for (int i = 0; i < nodes.Count; i++)
+                    {
+                        results[i] = ReadAttribute(fixture, nodes[i]);
+                    }
+                    return new ReadResponse
+                    {
+                        ResponseHeader = new ResponseHeader(),
+                        Results = ArrayOf.Wrapped(results),
+                        DiagnosticInfos = default
+                    };
+                });
+
             return mock;
+        }
+
+        private static DataValue ReadAttribute(
+            DiServerFixture fixture, ReadValueId nodeToRead)
+        {
+            NodeState? node = fixture.Manager.FindPredefinedNode<NodeState>(
+                nodeToRead.NodeId);
+            if (node is null)
+            {
+                return DataValue.FromStatusCode(StatusCodes.BadNodeIdUnknown);
+            }
+
+            if (nodeToRead.AttributeId == Attributes.NodeClass)
+            {
+                return new DataValue(new Variant((int)node.NodeClass));
+            }
+
+            if (nodeToRead.AttributeId == Attributes.Value &&
+                node is BaseVariableState variable)
+            {
+                return new DataValue(variable.WrappedValue);
+            }
+
+            return DataValue.FromStatusCode(StatusCodes.BadAttributeIdInvalid);
         }
 
         private static BrowsePathResult ResolveBrowsePath(

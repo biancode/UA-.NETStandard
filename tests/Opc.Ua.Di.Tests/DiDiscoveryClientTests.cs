@@ -224,6 +224,78 @@ namespace Opc.Ua.Di.Tests
         }
 
         [Test]
+        public async Task EnumerateDevicesAsyncReadsDeviceClassWhenPresent()
+        {
+            Mock<ISession> sessionMock = CreateSessionMock();
+            var nodeCacheMock = new Mock<INodeCache>(MockBehavior.Strict);
+            sessionMock.SetupGet(s => s.NodeCache).Returns(nodeCacheMock.Object);
+            ExpandedNodeId deviceTypeId = global::Opc.Ua.Di.ObjectTypeIds.DeviceType;
+            var deviceNodeId = new NodeId("device-class-1", 2);
+            var deviceClassNodeId = new NodeId("device-class-prop", 2);
+
+            ReferenceDescription deviceRef = MakeReference(
+                deviceNodeId, "Classy Device", deviceTypeId);
+            SetupBrowseSequential(sessionMock, first: [deviceRef], rest: []);
+            nodeCacheMock
+                .Setup(c => c.IsTypeOfAsync(
+                    deviceTypeId,
+                    deviceTypeId,
+                    It.IsAny<CancellationToken>()))
+                .Returns(new ValueTask<bool>(true));
+
+            sessionMock
+                .Setup(s => s.TranslateBrowsePathsToNodeIdsAsync(
+                    It.IsAny<RequestHeader?>(),
+                    It.IsAny<ArrayOf<BrowsePath>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new TranslateBrowsePathsToNodeIdsResponse
+                {
+                    ResponseHeader = new ResponseHeader(),
+                    Results = ArrayOf.Wrapped(
+                    [
+                        new BrowsePathResult
+                        {
+                            StatusCode = StatusCodes.Good,
+                            Targets = ArrayOf.Wrapped(
+                            [
+                                new BrowsePathTarget
+                                {
+                                    TargetId = new ExpandedNodeId(deviceClassNodeId),
+                                    RemainingPathIndex = uint.MaxValue
+                                }
+                            ])
+                        }
+                    ]),
+                    DiagnosticInfos = default
+                });
+
+            sessionMock
+                .Setup(s => s.ReadAsync(
+                    It.IsAny<RequestHeader?>(),
+                    It.IsAny<double>(),
+                    It.IsAny<TimestampsToReturn>(),
+                    It.IsAny<ArrayOf<ReadValueId>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ReadResponse
+                {
+                    ResponseHeader = new ResponseHeader(),
+                    Results = ArrayOf.Wrapped(
+                    [
+                        new DataValue(new Variant("Sensor"))
+                    ]),
+                    DiagnosticInfos = default
+                });
+
+            List<DeviceEntry> result = await ToListAsync(
+                DiDiscoveryClient.EnumerateDevicesAsync(
+                    sessionMock.Object, NullTelemetry())).ConfigureAwait(false);
+
+            Assert.That(result, Has.Count.EqualTo(1));
+            Assert.That(result[0].DeviceClass, Is.EqualTo("Sensor"));
+            nodeCacheMock.VerifyAll();
+        }
+
+        [Test]
         public async Task EnumerateDevicesAsyncStopsRecursionAtMaxDepth()
         {
             // Production constant is maxDepth = 3. Each non-device

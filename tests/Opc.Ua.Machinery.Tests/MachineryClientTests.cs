@@ -215,6 +215,43 @@ namespace Opc.Ua.Machinery.Tests
             Assert.That(await m_client.GetOperationModeAsync(bare.NodeId), Is.Null);
             Assert.That(await m_client.ResultManagementAsync(bare.NodeId), Is.Null);
             Assert.That(await m_client.JobManagementAsync(bare.NodeId), Is.Null);
+
+            var itemSnapshots = new List<FiniteStateSnapshot>();
+            await foreach (FiniteStateSnapshot snapshot in m_client.ObserveItemStateAsync(
+                bare.NodeId))
+            {
+                itemSnapshots.Add(snapshot);
+            }
+            Assert.That(itemSnapshots, Is.Empty);
+
+            var modeSnapshots = new List<FiniteStateSnapshot>();
+            await foreach (FiniteStateSnapshot snapshot in m_client.ObserveOperationModeAsync(
+                bare.NodeId))
+            {
+                modeSnapshots.Add(snapshot);
+            }
+            Assert.That(modeSnapshots, Is.Empty);
+        }
+
+        [Test]
+        public void DownloadResultRequiresAResultId()
+        {
+            Assert.ThrowsAsync<ArgumentException>(
+                async () => await m_client!.DownloadResultAsync(m_machine!.NodeId, string.Empty));
+        }
+
+        [Test]
+        public void SessionMachineryExtensionBuildsAClient()
+        {
+            MachineryClient client = m_session!.Object.Machinery(NUnitTelemetryContext.Create());
+            Assert.That(client.MachinesFolderId.IsNull, Is.False);
+
+            Assert.Throws<ArgumentNullException>(
+                () => SessionMachineryExtensions.Machinery(
+                    null!,
+                    NUnitTelemetryContext.Create()));
+            Assert.Throws<ArgumentNullException>(
+                () => m_session.Object.Machinery(null!));
         }
 
         private MachineryServerFixture? m_fixture;
