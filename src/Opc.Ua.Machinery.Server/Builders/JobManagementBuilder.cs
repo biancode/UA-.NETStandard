@@ -28,8 +28,10 @@
  * ======================================================================*/
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using Opc.Ua.ISA95.Server.Providers;
 using Opc.Ua.Machinery.Server.Jobs;
 using Opc.Ua.Machinery.Jobs;
@@ -107,7 +109,7 @@ namespace Opc.Ua.Machinery.Server.Builders
         IJobManagementBuilder WithJobOrderCatalog(IIsa95JobOrderCatalog catalog);
     }
 
-    internal sealed class JobManagementBuilder : IJobManagementBuilder
+    internal sealed class JobManagementBuilder : IJobManagementBuilder, IAsyncDisposable
     {
         public static JobManagementBuilder Create(MachineryBuildScope scope, NodeState machine)
         {
@@ -213,6 +215,126 @@ namespace Opc.Ua.Machinery.Server.Builders
 
             m_catalog ??= m_scope.BuildContext.GetService<IIsa95JobOrderCatalog>();
             await RefreshJobOrderListAsync(cancellationToken).ConfigureAwait(false);
+
+            // Isa95JobControlV2Binder only calls RefreshJobOrderListAsync back for
+            // operations that went through its own bound method handlers - a
+            // client calling Store/Start/... on JobOrderControl. Anything that
+            // changes the catalog by another route (a PLC/MES integration or a
+            // simulation calling IIsa95JobOrderReceiverV2/IIsa95JobExecutionController
+            // directly, bypassing the OPC UA method call entirely) leaves the
+            // published JobOrderList stale forever, because nothing else ever
+            // triggers a refresh. Opc.Ua.ISA95.Server's stand-alone Isa95NodeManager
+            // already closes this gap for a bare ISA-95 server by subscribing to
+            // both change streams the provider can publish; OPC 40001-3's
+            // JobManagement composes the same ISA-95 model and needs the same fix.
+            IIsa95JobOrderCatalogChangeSource? catalogChanges =
+                m_scope.BuildContext.GetService<IIsa95JobOrderCatalogChangeSource>();
+            IIsa95JobStatusSourceV2? statusSource =
+                m_scope.BuildContext.GetService<IIsa95JobStatusSourceV2>();
+            if (catalogChanges != null || statusSource != null)
+            {
+                m_logger = m_scope.BuildContext.Manager.Server.Telemetry
+                    .CreateLogger<JobManagementBuilder>();
+                m_changeStreamTask = ObserveExternalChangesAsync(
+                    catalogChanges, statusSource, m_changeStreamCts.Token);
+
+                // Neither stream source is torn down anywhere but build rollback -
+                // Machinery has no per-machine delete path, and every other
+                // long-lived per-machine resource in this module (for example
+                // MachineryResultTransferManager) follows the same convention.
+                m_scope.RegisteredResources.Add(this);
+            }
+        }
+
+        /// <summary>
+        /// Runs whichever of the two external change streams the resolved
+        /// provider actually publishes, refreshing the JobOrderList snapshot on
+        /// every event from either. A provider need not implement both
+        /// interfaces — the in-memory demo provider does, but a real PLC/MES
+        /// integration may only ever raise one kind of change.
+        /// </summary>
+        private async Task ObserveExternalChangesAsync(
+            IIsa95JobOrderCatalogChangeSource? catalogChanges,
+            IIsa95JobStatusSourceV2? statusSource,
+            CancellationToken cancellationToken)
+        {
+            List<Task> pumps = [];
+            if (catalogChanges != null)
+            {
+                pumps.Add(PumpCatalogChangesAsync(catalogChanges, cancellationToken));
+            }
+            if (statusSource != null)
+            {
+                pumps.Add(PumpJobStatusAsync(statusSource, cancellationToken));
+            }
+            await Task.WhenAll(pumps).ConfigureAwait(false);
+        }
+
+        private async Task PumpCatalogChangesAsync(
+            IIsa95JobOrderCatalogChangeSource source, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await foreach (Isa95JobOrderCatalogChange _ in source
+                    .SubscribeCatalogChangesAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    await RefreshJobOrderListAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Normal teardown via DisposeAsync.
+            }
+            catch (Exception ex)
+            {
+                m_logger?.JobOrderChangeStreamFailed(ex);
+            }
+        }
+
+        private async Task PumpJobStatusAsync(
+            IIsa95JobStatusSourceV2 source, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await foreach (Isa95JobStatusNotificationV2 _ in source
+                    .SubscribeAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    await RefreshJobOrderListAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Normal teardown via DisposeAsync.
+            }
+            catch (Exception ex)
+            {
+                m_logger?.JobOrderChangeStreamFailed(ex);
+            }
+        }
+
+        /// <summary>
+        /// Stops the external-change pumps. Only reached on build rollback —
+        /// see the comment where this is added to <c>RegisteredResources</c>.
+        /// </summary>
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                m_changeStreamCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Already disposed by a previous call.
+            }
+            try
+            {
+                await m_changeStreamTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected from the cancellation above.
+            }
+            m_changeStreamCts.Dispose();
         }
 
         private async ValueTask RefreshJobOrderListAsync(CancellationToken cancellationToken)
@@ -253,6 +375,7 @@ namespace Opc.Ua.Machinery.Server.Builders
         private readonly MachineryBuildScope m_scope;
         private readonly Isa95JobControlV2Binder m_binder;
         private readonly Lock m_refreshLock = new();
+        private readonly CancellationTokenSource m_changeStreamCts = new();
         private IIsa95JobOrderReceiverV2? m_receiver;
         private IIsa95JobResponseProviderV2? m_responseProvider;
         private IIsa95JobOrderCatalog? m_catalog;
@@ -260,5 +383,18 @@ namespace Opc.Ua.Machinery.Server.Builders
         private bool m_predefinedParameters;
         private long m_refreshGeneration;
         private long m_appliedGeneration;
+        private Task m_changeStreamTask = Task.CompletedTask;
+        private ILogger? m_logger;
+    }
+
+    internal static partial class JobManagementBuilderLog
+    {
+        [LoggerMessage(
+            EventId = MachineryServerEventIds.JobOrderChangeStreamFailed,
+            Level = LogLevel.Error,
+            Message = "The OPC 40001-3 job order change stream failed.")]
+        public static partial void JobOrderChangeStreamFailed(
+            this ILogger logger,
+            Exception exception);
     }
 }

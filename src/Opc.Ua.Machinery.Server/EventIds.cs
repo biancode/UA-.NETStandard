@@ -58,5 +58,11 @@ namespace Opc.Ua.Machinery.Server
         /// The result-ready event stream faulted.
         /// </summary>
         public const int ResultEventStreamFailed = 16003;
+
+        /// <summary>
+        /// The OPC 40001-3 job order change stream (catalog changes or job
+        /// status notifications) faulted.
+        /// </summary>
+        public const int JobOrderChangeStreamFailed = 16005;
     }
 }
