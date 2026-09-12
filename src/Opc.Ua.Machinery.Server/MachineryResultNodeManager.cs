@@ -83,6 +83,20 @@ namespace Opc.Ua.Machinery.Server
         /// </summary>
         public TimeSpan ResultTransferTimeout { get; set; } = TimeSpan.FromMinutes(2);
 
+        /// <summary>
+        /// Gets or sets the maximum number of result identifiers this
+        /// manager keeps pinned at once. See
+        /// <see cref="MachineryServerOptions.MaxPinnedResultHandles"/>.
+        /// </summary>
+        public int MaxPinnedResultHandles { get; set; } = 64;
+
+        /// <summary>
+        /// Gets or sets how long a pinned result handle survives without
+        /// activity. See
+        /// <see cref="MachineryServerOptions.PinnedResultHandleTimeout"/>.
+        /// </summary>
+        public TimeSpan PinnedResultHandleTimeout { get; set; } = TimeSpan.FromMinutes(5);
+
         internal void Validate()
         {
             if (string.IsNullOrWhiteSpace(InstanceNamespaceUri) ||
@@ -108,7 +122,9 @@ namespace Opc.Ua.Machinery.Server
                 Parts = MachineryParts.Result,
                 InstanceNamespaceUri = InstanceNamespaceUri,
                 MaxConcurrentResultTransfers = MaxConcurrentResultTransfers,
-                ResultTransferTimeout = ResultTransferTimeout
+                ResultTransferTimeout = ResultTransferTimeout,
+                MaxPinnedResultHandles = MaxPinnedResultHandles,
+                PinnedResultHandleTimeout = PinnedResultHandleTimeout
             };
         }
     }
@@ -274,7 +290,10 @@ namespace Opc.Ua.Machinery.Server
                 management.AddResultTransfer(SystemContext);
             }
 
-            var binder = new MachineryResultManagementBinder(management, SystemContext);
+            var binder = new MachineryResultManagementBinder(
+                management,
+                SystemContext,
+                m_options.ToTransferOptions());
             binder.BindMethods(m_store);
             await binder.BindEventTypeAsync(
                 this,

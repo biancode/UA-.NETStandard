@@ -144,7 +144,10 @@ namespace Opc.Ua.Machinery.Server.Builders
         {
             m_scope = scope;
             State = state;
-            m_binder = new MachineryResultManagementBinder(state, scope.Context);
+            m_binder = new MachineryResultManagementBinder(
+                state,
+                scope.Context,
+                ResolveOptions(scope));
             scope.PostRegistrationActions.Add(BindAsync);
         }
 
@@ -276,9 +279,11 @@ namespace Opc.Ua.Machinery.Server.Builders
             }
         }
 
-        private MachineryServerOptions ResolveOptions()
+        private MachineryServerOptions ResolveOptions() => ResolveOptions(m_scope);
+
+        private static MachineryServerOptions ResolveOptions(MachineryBuildScope scope)
         {
-            return m_scope.BuildContext is IMachineryBuildCoordinator coordinator
+            return scope.BuildContext is IMachineryBuildCoordinator coordinator
                 ? coordinator.Options
                 : new MachineryServerOptions();
         }

@@ -53,10 +53,14 @@ namespace Opc.Ua.Machinery.Server.Results
     {
         public MachineryResultManagementBinder(
             ResultManagementState state,
-            ISystemContext context)
+            ISystemContext context,
+            MachineryServerOptions? options = null,
+            TimeProvider? timeProvider = null)
         {
             State = state ?? throw new ArgumentNullException(nameof(state));
             m_context = context ?? throw new ArgumentNullException(nameof(context));
+            m_options = options ?? new MachineryServerOptions();
+            m_timeProvider = timeProvider ?? TimeProvider.System;
         }
 
         public ResultManagementState State { get; }
@@ -75,13 +79,24 @@ namespace Opc.Ua.Machinery.Server.Results
                     token => store.GetLatestResultAsync(token),
                     timeout,
                     ct).ConfigureAwait(false);
+                if (result == null)
+                {
+                    return new GetLatestResultMethodStateResult
+                    {
+                        ServiceResult = ServiceResult.Good,
+                        ResultHandle = 0,
+                        Result = new ResultDataType(),
+                        Error = unchecked((int)StatusCodes.BadNoDataAvailable.Code)
+                    };
+                }
+                uint? handle = TryPin(context, result.ResultId);
                 return new GetLatestResultMethodStateResult
                 {
-                    ServiceResult = ServiceResult.Good,
-                    ResultHandle = result == null ? 0 : Pin(context, result.ResultId),
-                    Result = result?.Data ?? new ResultDataType(),
-                    Error = result == null
-                        ? unchecked((int)StatusCodes.BadNoDataAvailable.Code)
+                    ServiceResult = handle == null ? PinnedHandleLimitReached() : ServiceResult.Good,
+                    ResultHandle = handle ?? 0,
+                    Result = result.Data,
+                    Error = handle == null
+                        ? unchecked((int)StatusCodes.BadTooManyOperations.Code)
                         : 0
                 };
             };
@@ -93,12 +108,25 @@ namespace Opc.Ua.Machinery.Server.Results
                     token => store.GetResultByIdAsync(resultId, token),
                     timeout,
                     ct).ConfigureAwait(false);
+                if (result == null)
+                {
+                    return new GetResultByIdMethodStateResult
+                    {
+                        ServiceResult = ServiceResult.Good,
+                        ResultHandle = 0,
+                        Result = new ResultDataType(),
+                        Error = unchecked((int)StatusCodes.BadNotFound.Code)
+                    };
+                }
+                uint? handle = TryPin(context, result.ResultId);
                 return new GetResultByIdMethodStateResult
                 {
-                    ServiceResult = ServiceResult.Good,
-                    ResultHandle = result == null ? 0 : Pin(context, result.ResultId),
-                    Result = result?.Data ?? new ResultDataType(),
-                    Error = result == null ? unchecked((int)StatusCodes.BadNotFound.Code) : 0
+                    ServiceResult = handle == null ? PinnedHandleLimitReached() : ServiceResult.Good,
+                    ResultHandle = handle ?? 0,
+                    Result = result.Data,
+                    Error = handle == null
+                        ? unchecked((int)StatusCodes.BadTooManyOperations.Code)
+                        : 0
                 };
             };
 
@@ -115,12 +143,15 @@ namespace Opc.Ua.Machinery.Server.Results
                     token => store.GetResultIdsAsync(maxResults, token),
                     timeout,
                     ct).ConfigureAwait(false);
+                uint? handle = ids.Count == 0 ? 0 : TryPin(context, ids);
                 return new GetResultIdListFilteredMethodStateResult
                 {
-                    ServiceResult = ServiceResult.Good,
-                    ResultHandle = ids.Count == 0 ? 0 : Pin(context, ids),
+                    ServiceResult = handle == null ? PinnedHandleLimitReached() : ServiceResult.Good,
+                    ResultHandle = handle ?? 0,
                     ResultIdList = ids,
-                    Error = 0
+                    Error = handle == null
+                        ? unchecked((int)StatusCodes.BadTooManyOperations.Code)
+                        : 0
                 };
             };
 
@@ -167,19 +198,66 @@ namespace Opc.Ua.Machinery.Server.Results
             }
         }
 
-        private uint Pin(ISystemContext context, string resultId)
+        private static ServiceResult PinnedHandleLimitReached()
         {
-            return Pin(context, new[] { resultId }.ToArrayOf());
+            return ServiceResult.Create(
+                StatusCodes.BadTooManyOperations,
+                "The maximum number of pinned result handles has been reached; " +
+                "release an existing handle with ReleaseResultHandle first.");
         }
 
-        private uint Pin(ISystemContext context, ArrayOf<string> resultIds)
+        private uint? TryPin(ISystemContext context, string resultId)
+        {
+            return TryPin(context, new[] { resultId }.ToArrayOf());
+        }
+
+        /// <summary>
+        /// Pins a result identifier list behind a fresh handle, refusing when
+        /// the configured cap is already reached. Expired handles are swept
+        /// first, so the cap is measured against handles a client is still
+        /// plausibly using — the same shape
+        /// <see cref="MachineryResultTransferManager"/> uses for its own
+        /// concurrent-handle limit.
+        /// </summary>
+        private uint? TryPin(ISystemContext context, ArrayOf<string> resultIds)
         {
             NodeId? sessionId = (context as ISessionSystemContext)?.SessionId;
+            DateTimeOffset now = m_timeProvider.GetUtcNow();
             lock (m_handleLock)
             {
+                ReclaimExpiredHandlesNoLock(now);
+                if (m_handles.Count >= m_options.MaxPinnedResultHandles)
+                {
+                    return null;
+                }
                 uint handle = ++m_nextHandle;
-                m_handles[handle] = new HandleEntry(sessionId, resultIds);
+                m_handles[handle] = new HandleEntry(sessionId, resultIds, now);
                 return handle;
+            }
+        }
+
+        /// <summary>
+        /// Drops handles that have seen no <c>ReleaseResultHandle</c> call for
+        /// longer than <see cref="MachineryServerOptions.PinnedResultHandleTimeout"/>.
+        /// Must be called with <see cref="m_handleLock"/> already held.
+        /// </summary>
+        private void ReclaimExpiredHandlesNoLock(DateTimeOffset now)
+        {
+            List<uint>? expired = null;
+            foreach (KeyValuePair<uint, HandleEntry> entry in m_handles)
+            {
+                if (now - entry.Value.PinnedAt > m_options.PinnedResultHandleTimeout)
+                {
+                    (expired ??= []).Add(entry.Key);
+                }
+            }
+            if (expired == null)
+            {
+                return;
+            }
+            for (int ii = 0; ii < expired.Count; ii++)
+            {
+                m_handles.Remove(expired[ii]);
             }
         }
 
@@ -310,6 +388,8 @@ namespace Opc.Ua.Machinery.Server.Results
         }
 
         private readonly ISystemContext m_context;
+        private readonly MachineryServerOptions m_options;
+        private readonly TimeProvider m_timeProvider;
         private NodeId m_eventTypeId = NodeId.Null;
         private readonly Dictionary<uint, HandleEntry> m_handles = [];
         private readonly Lock m_handleLock = new();
@@ -317,6 +397,7 @@ namespace Opc.Ua.Machinery.Server.Results
 
         private readonly record struct HandleEntry(
             NodeId? OwnerSessionId,
-            ArrayOf<string> ResultIds);
+            ArrayOf<string> ResultIds,
+            DateTimeOffset PinnedAt);
     }
 }

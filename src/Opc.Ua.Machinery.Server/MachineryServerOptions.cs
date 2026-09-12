@@ -75,6 +75,24 @@ namespace Opc.Ua.Machinery.Server
         public TimeSpan ResultTransferTimeout { get; set; } = TimeSpan.FromMinutes(2);
 
         /// <summary>
+        /// Gets or sets the maximum number of result identifiers a single
+        /// <c>ResultManagement</c> object keeps pinned at once across
+        /// <c>GetLatestResult</c>, <c>GetResultById</c> and
+        /// <c>GetResultIdListFiltered</c>. Reached, a further pin is refused
+        /// with <c>Bad_TooManyOperations</c> instead of growing the handle
+        /// table without bound.
+        /// </summary>
+        public int MaxPinnedResultHandles { get; set; } = 64;
+
+        /// <summary>
+        /// Gets or sets how long a pinned result handle survives without a
+        /// client releasing it via <c>ReleaseResultHandle</c> before the
+        /// server reclaims it. Reclaiming is swept at the start of every
+        /// pin, the only moment the cap can actually bite.
+        /// </summary>
+        public TimeSpan PinnedResultHandleTimeout { get; set; } = TimeSpan.FromMinutes(5);
+
+        /// <summary>
         /// Validates the configured options.
         /// </summary>
         /// <exception cref="ArgumentException">
@@ -116,6 +134,20 @@ namespace Opc.Ua.Machinery.Server
                 throw new ArgumentException(
                     "MachineryServerOptions.ResultTransferTimeout must be positive.",
                     nameof(ResultTransferTimeout));
+            }
+
+            if (MaxPinnedResultHandles < 1)
+            {
+                throw new ArgumentException(
+                    "MachineryServerOptions.MaxPinnedResultHandles must be positive.",
+                    nameof(MaxPinnedResultHandles));
+            }
+
+            if (PinnedResultHandleTimeout <= TimeSpan.Zero)
+            {
+                throw new ArgumentException(
+                    "MachineryServerOptions.PinnedResultHandleTimeout must be positive.",
+                    nameof(PinnedResultHandleTimeout));
             }
 
             if (InstanceNamespaceUri == global::Opc.Ua.Namespaces.OpcUa ||
