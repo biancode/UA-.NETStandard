@@ -76,6 +76,8 @@ namespace Opc.Ua.Machinery.Tests.Integration
     [NonParallelizable]
     public sealed class MachineryEndToEndTests
     {
+        private const string kNotificationMessage = "E2E notification.";
+
         [Test]
         public async Task TheClientDrivesEveryPartOverTheWireAsync()
         {
@@ -132,11 +134,15 @@ namespace Opc.Ua.Machinery.Tests.Integration
                     machine,
                     configurator,
                     ct).ConfigureAwait(false);
-                await AssertZeroPointAdjustmentAsync(machinery, processValue, ct)
+                await AssertZeroPointAdjustmentAsync(machinery, processValue, session, ct)
                     .ConfigureAwait(false);
                 await AssertEnergyAsync(machinery, machine, ct).ConfigureAwait(false);
                 await AssertJobsAsync(machinery, machine, ct).ConfigureAwait(false);
                 await AssertResultsAsync(machinery, machine, configurator, session, ct)
+                    .ConfigureAwait(false);
+
+                await AssertNotificationEventAsync(
+                    machinery, machine, configurator, session, ct)
                     .ConfigureAwait(false);
                 await AssertConformanceAsync(session, ct).ConfigureAwait(false);
             }
@@ -180,6 +186,25 @@ namespace Opc.Ua.Machinery.Tests.Integration
             }
             Assert.That(machines, Has.Count.EqualTo(1));
             NodeId machine = machines[0].NodeId;
+
+            // The NodeId-only convenience over the same walk.
+            ArrayOf<NodeId> discovered = await machinery
+                .DiscoverMachinesAsync(ct)
+                .ConfigureAwait(false);
+            Assert.That(
+                discovered.ToArray(),
+                Is.EqualTo(new[] { machine }),
+                "DiscoverMachinesAsync has to report the same machines as the walk.");
+
+            // OPC 40001-1 §7.1 and Table 12 require the folder; eight
+            // conformance units hang off it.
+            NodeId buildingBlocks = await machinery
+                .ResolveBuildingBlocksAsync(machine, ct)
+                .ConfigureAwait(false);
+            Assert.That(
+                buildingBlocks.IsNull,
+                Is.False,
+                "The MachineryBuildingBlocks folder has to be resolvable.");
 
             MachineIdentification? identification = await machinery
                 .ReadIdentificationAsync(machine, ct)
@@ -334,21 +359,146 @@ namespace Opc.Ua.Machinery.Tests.Integration
             reading = await machinery.ReadProcessValueAsync(processValue, ct)
                 .ConfigureAwait(false);
             Assert.That(reading!.Value, Is.EqualTo(70.0));
+
+            // The OPC 40001-2 Status word is vendor-specific, so the only thing
+            // the library owes is that what the server writes is what a client
+            // reads back.
+            await configurator.OilTemperature.SetStatusAsync(0x0042, ct)
+                .ConfigureAwait(false);
+            reading = await machinery.ReadProcessValueAsync(processValue, ct)
+                .ConfigureAwait(false);
+            Assert.That(reading!.Status, Is.EqualTo(0x0042));
             return processValue;
         }
 
         private static async Task AssertZeroPointAdjustmentAsync(
             MachineryClient machinery,
             NodeId processValue,
+            ClientSession session,
             CancellationToken ct)
         {
-            StatusCode status = await machinery
-                .ZeroPointAdjustmentAsync(processValue, ct)
-                .ConfigureAwait(false);
             Assert.That(
-                StatusCode.IsGood(status),
-                Is.True,
-                "OPC 40001-2's ZeroPointAdjustment method has to be callable.");
+                session.TryGetSubscriptionManager(
+                    out ClientSubscriptionManager? subscriptionManager),
+                Is.True);
+            await using var streaming = new StreamingSubscription(subscriptionManager!);
+
+            using var eventCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            eventCts.CancelAfter(TimeSpan.FromSeconds(30));
+
+            // OPC 40001-2's conformance unit says every instance supporting the
+            // method generates the event, so the call and the event belong in
+            // the same assertion: the method alone proves only half of it.
+            IAsyncEnumerator<ZeroPointAdjustmentEventTypeRecord> events = machinery
+                .ObserveZeroPointAdjustmentsAsync(
+                    processValue, streaming, cancellationToken: eventCts.Token)
+                .GetAsyncEnumerator(eventCts.Token);
+            try
+            {
+                Task<bool> pending = events.MoveNextAsync().AsTask();
+                Assert.That(
+                    await WaitForAsync(
+                        () => subscriptionManager!.Items.Any(subscription =>
+                            subscription.Created &&
+                            subscription.MonitoredItems.Items.Any(item =>
+                                item.Created && ServiceResult.IsGood(item.Error))),
+                        TimeSpan.FromSeconds(20),
+                        eventCts.Token).ConfigureAwait(false),
+                    Is.True,
+                    "The zero-point event subscription has to come up.");
+
+                StatusCode status = await machinery
+                    .ZeroPointAdjustmentAsync(processValue, ct)
+                    .ConfigureAwait(false);
+                Assert.That(
+                    StatusCode.IsGood(status),
+                    Is.True,
+                    "OPC 40001-2's ZeroPointAdjustment method has to be callable.");
+
+                Assert.That(
+                    await Task.WhenAny(pending, Task.Delay(TimeSpan.FromSeconds(25), ct))
+                        .ConfigureAwait(false),
+                    Is.SameAs(pending),
+                    "Calling ZeroPointAdjustment has to report the event to a "
+                        + "subscribed client.");
+                Assert.That(await pending.ConfigureAwait(false), Is.True);
+            }
+            finally
+            {
+                await events.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
+        /// Subscribes to the machine's OPC 40001-1 <c>Notifications</c> add-in
+        /// and reports an event on it while the subscription is live.
+        /// </summary>
+        /// <remarks>
+        /// OPC 40001-1 fixes the notifier but not the event types, so what is
+        /// asserted is that an event reported on the add-in reaches a client
+        /// that subscribed to it; the stock <c>SystemEventType</c> stands in
+        /// for a vendor event, exactly as the sample does.
+        /// </remarks>
+        private static async Task AssertNotificationEventAsync(
+            MachineryClient machinery,
+            NodeId machine,
+            PressConfigurator configurator,
+            ClientSession session,
+            CancellationToken ct)
+        {
+            Assert.That(
+                session.TryGetSubscriptionManager(
+                    out ClientSubscriptionManager? subscriptionManager),
+                Is.True);
+            await using var streaming = new StreamingSubscription(subscriptionManager!);
+
+            using var eventCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            eventCts.CancelAfter(TimeSpan.FromSeconds(30));
+            IAsyncEnumerator<BaseEventTypeRecord> events = machinery
+                .ObserveNotificationsAsync(
+                    machine, streaming, cancellationToken: eventCts.Token)
+                .GetAsyncEnumerator(eventCts.Token);
+            try
+            {
+                Task<bool> pending = events.MoveNextAsync().AsTask();
+                Assert.That(
+                    await WaitForAsync(
+                        () => subscriptionManager!.Items.Any(subscription =>
+                            subscription.Created &&
+                            subscription.MonitoredItems.Items.Any(item =>
+                                item.Created && ServiceResult.IsGood(item.Error))),
+                        TimeSpan.FromSeconds(20),
+                        eventCts.Token).ConfigureAwait(false),
+                    Is.True,
+                    "The notification subscription has to come up.");
+
+                IMachineryNotificationPublisher notifications =
+                    configurator.Machine!.Notifications!;
+                var notification = new SystemEventState(null);
+                notification.Initialize(
+                    notifications.Context,
+                    notifications.Notifier,
+                    EventSeverity.Low,
+                    new LocalizedText(kNotificationMessage));
+                notification.TypeDefinitionId = Opc.Ua.ObjectTypeIds.SystemEventType;
+                notification.EventType!.Value = Opc.Ua.ObjectTypeIds.SystemEventType;
+                await notifications.PublishAsync(notification, ct).ConfigureAwait(false);
+
+                Assert.That(
+                    await Task.WhenAny(pending, Task.Delay(TimeSpan.FromSeconds(25), ct))
+                        .ConfigureAwait(false),
+                    Is.SameAs(pending),
+                    "An event reported on the Notifications add-in has to reach a "
+                        + "subscribed client.");
+                Assert.That(await pending.ConfigureAwait(false), Is.True);
+                Assert.That(
+                    events.Current.Message.Text,
+                    Is.EqualTo(kNotificationMessage));
+            }
+            finally
+            {
+                await events.DisposeAsync().ConfigureAwait(false);
+            }
         }
 
         private static async Task AssertEnergyAsync(
@@ -381,6 +531,15 @@ namespace Opc.Ua.Machinery.Tests.Integration
                 Is.Not.Null,
                 "OPC 40001-4 requires a Main metering point per resource.");
             Assert.That(main!.ApplicationTag, Is.EqualTo("press/CompressedAir"));
+
+            // The same point read directly by its own NodeId, which is the
+            // path a client takes for a sub-metering point below Main.
+            MachineryMeteringPoint? byNodeId = await machinery
+                .ReadMeteringPointAsync(main.NodeId, ct)
+                .ConfigureAwait(false);
+            Assert.That(byNodeId, Is.Not.Null);
+            Assert.That(byNodeId!.NodeId, Is.EqualTo(main.NodeId));
+            Assert.That(byNodeId.ApplicationTag, Is.EqualTo(main.ApplicationTag));
 
             var measurements = new Dictionary<string, Variant>(StringComparer.Ordinal);
             foreach (MachineryMeasurementValue measurement in main.Measurements)
