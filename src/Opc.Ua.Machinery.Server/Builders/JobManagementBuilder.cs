@@ -134,13 +134,23 @@ namespace Opc.Ua.Machinery.Server.Builders
             m_binder = new Isa95JobControlV2Binder(
                 scope.Context,
                 scope.Context.NamespaceUris,
-                RefreshJobOrderListAsync);
+                RefreshListsAsync);
 
             V2.ISA95JobOrderReceiverObjectState control = State.JobOrderControl ??
                 throw ServiceResultException.Create(
                     StatusCodes.BadConfigurationError,
                     "The generated JobManagementType instance is missing JobOrderControl.");
             m_binder.AddReceiverMethods(control);
+
+            // JobOrderResponseList is an optional child of the generated
+            // response provider type, and nodes can only be staged while the
+            // machine is being built - BindAsync runs after registration, too
+            // late for the node manager to index a new node. Create it here and
+            // fill it there.
+            if (State.JobOrderResults is { JobOrderResponseList: null } results)
+            {
+                results.AddJobOrderResponseList(scope.Context);
+            }
 
             // The build only stages nodes; the actual binding runs once the
             // machine is registered, so a provider resolved from the hosting
@@ -180,6 +190,22 @@ namespace Opc.Ua.Machinery.Server.Builders
 
         private async ValueTask BindAsync(CancellationToken cancellationToken)
         {
+            // Every list this builder publishes - JobOrderList and
+            // JobOrderResponseList alike - is a variable on this machine's own
+            // JobManagement block, so it has to be fed by this machine's own
+            // provider. A machine that was given one through
+            // WithJobOrderReceiver/WithJobOrderCatalog/WithJobResponseProvider
+            // must therefore never fall back to the container: that singleton
+            // belongs to another machine, and reading it here would publish
+            // another machine's orders and responses - every machine in the
+            // server would show one shared pair of lists.
+            //
+            // Decided before anything is defaulted, because the fallbacks below
+            // would otherwise make every machine look like it had its own.
+            bool ownProvider = m_receiver != null
+                || m_catalog != null
+                || m_responseProvider != null;
+
             IIsa95JobOrderReceiverV2? receiver = m_receiver ??
                 m_scope.BuildContext.GetService<IIsa95JobOrderReceiverV2>();
             if (receiver == null)
@@ -190,6 +216,13 @@ namespace Opc.Ua.Machinery.Server.Builders
                     "receiver. Register one with AddInMemoryIsa95JobControlProvider() or " +
                     "supply it through WithJobOrderReceiver().");
             }
+
+            // Resolved before InitializeOrderVariables, so MaxDownloadableJobOrders
+            // reports the catalog's own limit rather than zero whenever the
+            // catalog was not named explicitly.
+            m_catalog ??= ownProvider
+                ? FirstOf<IIsa95JobOrderCatalog>(m_receiver, m_responseProvider)
+                : m_scope.BuildContext.GetService<IIsa95JobOrderCatalog>();
 
             if (m_predefinedParameters)
             {
@@ -204,17 +237,30 @@ namespace Opc.Ua.Machinery.Server.Builders
                 m_catalog?.MaxDownloadableJobOrders ?? 0);
             control.JobOrderList!.OnSimpleReadValue = ReadJobOrderList;
 
-            IIsa95JobResponseProviderV2? responseProvider = m_responseProvider ??
-                m_scope.BuildContext.GetService<IIsa95JobResponseProviderV2>();
+            IIsa95JobResponseProviderV2? responseProvider = m_responseProvider ?? (ownProvider
+                ? FirstOf<IIsa95JobResponseProviderV2>(m_receiver, m_catalog)
+                : m_scope.BuildContext.GetService<IIsa95JobResponseProviderV2>());
             if (responseProvider != null && State.JobOrderResults != null)
             {
                 State.JobOrderResults.EventNotifier = EventNotifiers.SubscribeToEvents;
                 m_binder.BindResponseProvider(State.JobOrderResults, responseProvider);
                 m_scope.RecordFacet(MachineryFacet.JobResults);
+
+                // The two request methods answer one id or one state; neither
+                // can express "every response", so the list variable stays empty
+                // unless a catalog fills it.
+                m_responseCatalog = ownProvider
+                    ? FirstOf<IIsa95JobResponseCatalog>(m_receiver, m_catalog, responseProvider)
+                    : m_scope.BuildContext.GetService<IIsa95JobResponseCatalog>();
+
+                if (State.JobOrderResults.JobOrderResponseList is { } responseList)
+                {
+                    responseList.Value = [];
+                    responseList.OnSimpleReadValue = ReadJobOrderResponseList;
+                }
             }
 
-            m_catalog ??= m_scope.BuildContext.GetService<IIsa95JobOrderCatalog>();
-            await RefreshJobOrderListAsync(cancellationToken).ConfigureAwait(false);
+            await RefreshListsAsync(cancellationToken).ConfigureAwait(false);
 
             // Isa95JobControlV2Binder only calls RefreshJobOrderListAsync back for
             // operations that went through its own bound method handlers - a
@@ -227,10 +273,14 @@ namespace Opc.Ua.Machinery.Server.Builders
             // already closes this gap for a bare ISA-95 server by subscribing to
             // both change streams the provider can publish; OPC 40001-3's
             // JobManagement composes the same ISA-95 model and needs the same fix.
-            IIsa95JobOrderCatalogChangeSource? catalogChanges =
-                m_scope.BuildContext.GetService<IIsa95JobOrderCatalogChangeSource>();
-            IIsa95JobStatusSourceV2? statusSource =
-                m_scope.BuildContext.GetService<IIsa95JobStatusSourceV2>();
+            // Resolved the same way as the catalog above, and for the same
+            // reason: a machine with its own provider listens to that provider.
+            IIsa95JobOrderCatalogChangeSource? catalogChanges = ownProvider
+                ? FirstOf<IIsa95JobOrderCatalogChangeSource>(m_receiver, m_catalog, m_responseProvider)
+                : m_scope.BuildContext.GetService<IIsa95JobOrderCatalogChangeSource>();
+            IIsa95JobStatusSourceV2? statusSource = ownProvider
+                ? FirstOf<IIsa95JobStatusSourceV2>(m_receiver, m_catalog, m_responseProvider)
+                : m_scope.BuildContext.GetService<IIsa95JobStatusSourceV2>();
             if (catalogChanges != null || statusSource != null)
             {
                 m_logger = m_scope.BuildContext.Manager.Server.Telemetry
@@ -244,6 +294,29 @@ namespace Opc.Ua.Machinery.Server.Builders
                 // MachineryResultTransferManager) follows the same convention.
                 m_scope.RegisteredResources.Add(this);
             }
+        }
+
+        /// <summary>
+        /// Returns the first bound object that implements <typeparamref name="T"/>.
+        /// </summary>
+        /// <typeparam name="T">The ISA-95 provider facet to look for.</typeparam>
+        /// <param name="candidates">The explicitly bound objects, in priority order.</param>
+        /// <remarks>
+        /// A provider typically implements several ISA-95 facets on one object —
+        /// <c>InMemoryIsa95JobControlProvider</c> implements all of them — so a
+        /// caller binding it as the receiver has also supplied the catalog and
+        /// both change streams without naming them.
+        /// </remarks>
+        private static T? FirstOf<T>(params object?[] candidates) where T : class
+        {
+            foreach (object? candidate in candidates)
+            {
+                if (candidate is T match)
+                {
+                    return match;
+                }
+            }
+            return null;
         }
 
         /// <summary>
@@ -278,7 +351,7 @@ namespace Opc.Ua.Machinery.Server.Builders
                 await foreach (Isa95JobOrderCatalogChange _ in source
                     .SubscribeCatalogChangesAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    await RefreshJobOrderListAsync(cancellationToken).ConfigureAwait(false);
+                    await RefreshListsAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -299,7 +372,7 @@ namespace Opc.Ua.Machinery.Server.Builders
                 await foreach (Isa95JobStatusNotificationV2 _ in source
                     .SubscribeAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    await RefreshJobOrderListAsync(cancellationToken).ConfigureAwait(false);
+                    await RefreshListsAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -337,6 +410,18 @@ namespace Opc.Ua.Machinery.Server.Builders
             m_changeStreamCts.Dispose();
         }
 
+        /// <summary>
+        /// Refreshes both published lists. A job order change and a job response
+        /// arriving are the same event as far as a client is concerned — a job
+        /// that ends produces both — so the two lists are always refreshed
+        /// together rather than drifting apart between events.
+        /// </summary>
+        private async ValueTask RefreshListsAsync(CancellationToken cancellationToken)
+        {
+            await RefreshJobOrderListAsync(cancellationToken).ConfigureAwait(false);
+            await RefreshJobOrderResponseListAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         private async ValueTask RefreshJobOrderListAsync(CancellationToken cancellationToken)
         {
             IIsa95JobOrderCatalog? catalog = m_catalog;
@@ -372,6 +457,41 @@ namespace Opc.Ua.Machinery.Server.Builders
             return ServiceResult.Good;
         }
 
+        private async ValueTask RefreshJobOrderResponseListAsync(CancellationToken cancellationToken)
+        {
+            IIsa95JobResponseCatalog? catalog = m_responseCatalog;
+            if (catalog == null)
+            {
+                return;
+            }
+            long generation = Interlocked.Increment(ref m_responseRefreshGeneration);
+            ArrayOf<V2.ISA95JobResponseDataType> responses = m_binder.NormalizeResponses(
+                await catalog.GetJobResponsesV2Async(cancellationToken).ConfigureAwait(false));
+            lock (m_refreshLock)
+            {
+                if (generation <= m_appliedResponseGeneration)
+                {
+                    return;
+                }
+                m_jobResponses = responses;
+                m_appliedResponseGeneration = generation;
+            }
+        }
+
+        private ServiceResult ReadJobOrderResponseList(
+            ISystemContext context,
+            NodeState node,
+            ref Variant value)
+        {
+            ArrayOf<V2.ISA95JobResponseDataType> snapshot;
+            lock (m_refreshLock)
+            {
+                snapshot = m_jobResponses;
+            }
+            value = Variant.FromStructure(snapshot);
+            return ServiceResult.Good;
+        }
+
         private readonly MachineryBuildScope m_scope;
         private readonly Isa95JobControlV2Binder m_binder;
         private readonly Lock m_refreshLock = new();
@@ -379,10 +499,14 @@ namespace Opc.Ua.Machinery.Server.Builders
         private IIsa95JobOrderReceiverV2? m_receiver;
         private IIsa95JobResponseProviderV2? m_responseProvider;
         private IIsa95JobOrderCatalog? m_catalog;
+        private IIsa95JobResponseCatalog? m_responseCatalog;
         private ArrayOf<V2.ISA95JobOrderAndStateDataType> m_jobOrders = [];
+        private ArrayOf<V2.ISA95JobResponseDataType> m_jobResponses = [];
         private bool m_predefinedParameters;
         private long m_refreshGeneration;
         private long m_appliedGeneration;
+        private long m_responseRefreshGeneration;
+        private long m_appliedResponseGeneration;
         private Task m_changeStreamTask = Task.CompletedTask;
         private ILogger? m_logger;
     }
