@@ -112,11 +112,45 @@ namespace Opc.Ua.Machinery.Tests
         {
             QualifiedName[] units = [.. m_manager!.ConformanceUnits];
 
+            // A type-exposure unit: loading the model satisfies it.
             Assert.That(units, Contains.Item(new QualifiedName("Machinery-Result Types")));
+
+            // The binder publishes all five ResultManagementType methods
+            // together, so the four method units stand or fall with the object.
+            Assert.That(
+                units,
+                Contains.Item(new QualifiedName("Machinery-Result GetLatestResult")));
+            Assert.That(
+                units,
+                Contains.Item(new QualifiedName("Machinery-Result GetResultById")));
+            Assert.That(
+                units,
+                Contains.Item(new QualifiedName("Machinery-Result GetResultsFiltered")));
+            Assert.That(
+                units,
+                Contains.Item(new QualifiedName("Machinery Result AcknowledgeResults")));
+            Assert.That(
+                units,
+                Contains.Item(new QualifiedName("Machinery-Result ResultFiles")),
+                "The stand-alone server enables the download path by default.");
             Assert.That(
                 units,
                 Has.No.Member(new QualifiedName("Machinery-Result ResultEvents")),
                 "No result has been published yet.");
+
+            // The full Result Transfer facet composes the result-ready events,
+            // so before one is reported only the simple facet may be claimed.
+            string[] profiles = [.. m_manager.ServerProfiles];
+            Assert.That(
+                profiles,
+                Contains.Item(
+                    "http://opcfoundation.org/UA-Profile/Machinery/Result/Server/" +
+                    "SimpleResultTransfer"));
+            Assert.That(
+                profiles,
+                Has.No.Member(
+                    "http://opcfoundation.org/UA-Profile/Machinery/Result/Server/" +
+                    "ResultTransfer"));
         }
 
         [Test]
@@ -135,6 +169,12 @@ namespace Opc.Ua.Machinery.Tests
             Assert.That(
                 units,
                 Contains.Item(new QualifiedName("Machinery-Result ResultEvents")));
+            Assert.That(
+                (string[])[.. m_manager.ServerProfiles],
+                Contains.Item(
+                    "http://opcfoundation.org/UA-Profile/Machinery/Result/Server/" +
+                    "ResultTransfer"),
+                "The full facet becomes claimable once an event has been reported.");
 
             var options = new ResultTransferOptionsDataType { ResultId = "S-1" };
             var outputs = new List<Variant>();

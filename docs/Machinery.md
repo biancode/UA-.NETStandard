@@ -660,7 +660,7 @@ A server that builds no machine therefore advertises nothing but
 | Result variables in the `Results` folder (`… ResultVariables`) | ✅ | ✅ | [`MachineryResultVariables`](../src/Opc.Ua.Machinery.Server/Results/MachineryResultVariables.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
 | Result-ready events with a concrete event type (`… ResultEvents`) | ✅ | ✅ | [`MachineryResultManagementBinder`](../src/Opc.Ua.Machinery.Server/Results/MachineryResultManagementBinder.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
 | Predefined result metadata (`… PredefinedResultMetaData`) | ✅ | ❌ not advertised — the store decides what metadata a result carries | — | — |
-| Stand-alone result server without DI or the machine model | ✅ | ✅ | [`MachineryResultNodeManager`](../src/Opc.Ua.Machinery.Server/MachineryResultNodeManager.cs) | `MachineryResultServerTests` |
+| Stand-alone result server without DI or the machine model, reporting the same units and facets | ✅ | ✅ | [`MachineryResultNodeManager`](../src/Opc.Ua.Machinery.Server/MachineryResultNodeManager.cs) | `MachineryResultServerTests` |
 | Durable result store | ❌ not shipped (in-memory only) | — | — | — |
 
 ### Client and hosting

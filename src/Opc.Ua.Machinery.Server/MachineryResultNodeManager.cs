@@ -169,6 +169,14 @@ namespace Opc.Ua.Machinery.Server
         public IMachineryResultPublisher? Publisher { get; private set; }
 
         /// <inheritdoc/>
+        /// <remarks>
+        /// Answered the same way <see cref="MachineryNodeManager"/> answers it:
+        /// <c>Machinery-Result Types</c> is a type-exposure unit that loading
+        /// the model satisfies, and the rest are reported only once the
+        /// structure behind them is there. The four method units stand or fall
+        /// together because the binder publishes all five methods of
+        /// <c>ResultManagementType</c> at once.
+        /// </remarks>
         public ArrayOf<QualifiedName> ConformanceUnits
         {
             get
@@ -177,6 +185,19 @@ namespace Opc.Ua.Machinery.Server
                 {
                     new(ConformanceUnitNames.ResultTypes)
                 };
+                if (ResultManagement != null)
+                {
+                    units.Add(new QualifiedName(ConformanceUnitNames.ResultGetLatestResult));
+                    units.Add(new QualifiedName(ConformanceUnitNames.ResultGetResultById));
+                    units.Add(
+                        new QualifiedName(ConformanceUnitNames.ResultGetResultsFiltered));
+                    units.Add(
+                        new QualifiedName(ConformanceUnitNames.ResultAcknowledgeResults));
+                }
+                if (m_transfer != null)
+                {
+                    units.Add(new QualifiedName(ConformanceUnitNames.ResultFiles));
+                }
                 if (m_raisedResultEvent)
                 {
                     units.Add(new QualifiedName(ConformanceUnitNames.ResultEvents));
@@ -186,8 +207,31 @@ namespace Opc.Ua.Machinery.Server
         }
 
         /// <inheritdoc/>
-        public ArrayOf<string> ServerProfiles =>
-            new string[] { Opc.Ua.Machinery.Server.ServerProfiles.ResultTransfer };
+        /// <remarks>
+        /// The simple facet needs <c>GetLatestResult</c> and the result types;
+        /// the full one additionally needs the result-ready events, so it can
+        /// only be claimed once one has actually been reported. Advertising it
+        /// before then would promise a client an event stream that has never
+        /// produced an event.
+        /// </remarks>
+        public ArrayOf<string> ServerProfiles
+        {
+            get
+            {
+                var profiles = new List<string>();
+                if (ResultManagement != null)
+                {
+                    profiles.Add(
+                        Opc.Ua.Machinery.Server.ServerProfiles.ResultSimpleTransfer);
+                    if (m_raisedResultEvent)
+                    {
+                        profiles.Add(
+                            Opc.Ua.Machinery.Server.ServerProfiles.ResultTransfer);
+                    }
+                }
+                return profiles.ToArrayOf();
+            }
+        }
 
         /// <inheritdoc/>
         protected override ValueTask<NodeStateCollection> LoadPredefinedNodesAsync(
