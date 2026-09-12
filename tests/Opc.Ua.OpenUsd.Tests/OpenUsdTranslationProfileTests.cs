@@ -47,6 +47,8 @@ namespace Opc.Ua.OpenUsd.Tests
     [Parallelizable]
     public sealed class OpenUsdTranslationProfileTests
     {
+        private static readonly double[] s_expectedTranslation = [1.5, -2.5, 3.5];
+
         [Test]
         public void StructuredCartesianCoordinatesAreAccepted()
         {
@@ -68,7 +70,15 @@ namespace Opc.Ua.OpenUsd.Tests
             Assert.That(converted.IsNull, Is.False,
                 "A structured 3D coordinate is the source shape the translation profile is " +
                 "defined for; leaving it unresolved would stop any prim following it.");
-            Assert.That(converted.ToString(), Does.Contain("1.5"));
+            // Asserted on the values, not on a rendering: Variant.ToString()
+            // formats in the current culture, so on a machine whose region uses
+            // a decimal comma the old string assertion failed on the formatting
+            // rather than on the conversion.
+            Assert.That(
+                converted.TryGetArray(out ArrayOf<double> translation, BuiltInType.Double),
+                Is.True,
+                "The translation profile yields the three scaled components.");
+            Assert.That(translation.ToArray(), Is.EqualTo(s_expectedTranslation));
         }
 
         [Test]
