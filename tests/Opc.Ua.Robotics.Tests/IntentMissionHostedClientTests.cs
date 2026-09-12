@@ -317,6 +317,16 @@ namespace Opc.Ua.Robotics.Tests
                     .AddServer(options =>
                     {
                         options.ApplicationName = "MissionHostedServer";
+                        // Per-run PKI: the hosting defaults put the server's own
+                        // store under a shared "OPC Foundation/<ApplicationName>"
+                        // folder in the temp directory, and every run mints a fresh
+                        // certificate per key type into it. Past a few dozen the
+                        // endpoint stops opening, which looks exactly like an
+                        // unrelated regression in whatever suite runs next.
+                        options.PkiRoot = System.IO.Path.Combine(
+                            System.IO.Path.GetTempPath(),
+                            "UaTestPki",
+                            System.IO.Path.GetRandomFileName());
                         options.ApplicationUri = "urn:localhost:OPCFoundation:MissionHostedServer";
                         options.ProductUri = "uri:opcfoundation.org:MissionHostedServer";
                         options.AutoAcceptUntrustedCertificates = true;

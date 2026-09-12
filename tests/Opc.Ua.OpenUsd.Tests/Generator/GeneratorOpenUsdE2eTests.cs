@@ -101,6 +101,16 @@ namespace Opc.Ua.OpenUsd.Tests.Generator
                 .AddServer(o =>
                 {
                     o.ApplicationName = "GeneratorE2eServer";
+                    // Per-run PKI: the hosting defaults put the server's own
+                    // store under a shared "OPC Foundation/<ApplicationName>"
+                    // folder in the temp directory, and every run mints a fresh
+                    // certificate per key type into it. Past a few dozen the
+                    // endpoint stops opening, which looks exactly like an
+                    // unrelated regression in whatever suite runs next.
+                    o.PkiRoot = System.IO.Path.Combine(
+                        System.IO.Path.GetTempPath(),
+                        "UaTestPki",
+                        System.IO.Path.GetRandomFileName());
                     o.ApplicationUri = "urn:localhost:OPCFoundation:GeneratorE2eServer";
                     o.AutoAcceptUntrustedCertificates = true;
                     o.EndpointUrls.Add(serverUrl);
