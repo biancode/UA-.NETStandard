@@ -222,6 +222,34 @@ namespace Opc.Ua.Machinery.Server.Builders
         /// </param>
         IProcessValueBuilder WithZeroPointAdjustment(
             Func<ProcessValueState, CancellationToken, ValueTask<StatusCode>> onAdjust);
+
+        /// <summary>
+        /// Adds OPC 30081's <c>ActualValue</c>, <c>SimulationValue</c> and
+        /// <c>SimulationState</c> to the analog signal, satisfying
+        /// <c>3:PA-DIM AnalogSignalVariable Simulation</c>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// While <c>SimulationState</c> is set, the signal reports
+        /// <c>SimulationValue</c> and <c>ActualValue</c> keeps carrying the
+        /// real reading, which is what lets a client tell a simulated plant
+        /// from a running one. Everything derived from the signal — the
+        /// percentage, the limit alarm and the deviation alarm — follows the
+        /// reported value, because that is the value the plant is acting on.
+        /// </para>
+        /// <para>
+        /// <see cref="IProcessValueHandle.SetSimulationAsync"/> drives it at
+        /// runtime.
+        /// </para>
+        /// </remarks>
+        /// <param name="simulationValue">The initial simulated reading.</param>
+        /// <param name="simulationState">
+        /// Whether simulation starts active. A server that comes up simulating
+        /// is unusual, so this defaults to <see langword="false"/>.
+        /// </param>
+        IProcessValueBuilder WithSimulation(
+            double simulationValue = 0,
+            bool simulationState = false);
     }
 
     /// <summary>
@@ -290,6 +318,24 @@ namespace Opc.Ua.Machinery.Server.Builders
         /// The process value publishes no status.
         /// </exception>
         ValueTask SetStatusAsync(ushort status, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Switches OPC 30081 simulation on or off and optionally writes a new
+        /// simulated reading.
+        /// </summary>
+        /// <param name="simulationState">Whether simulation is active.</param>
+        /// <param name="simulationValue">
+        /// The simulated reading, or <see langword="null"/> to keep the
+        /// current one.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <exception cref="ServiceResultException">
+        /// The process value publishes no simulation members.
+        /// </exception>
+        ValueTask SetSimulationAsync(
+            bool simulationState,
+            double? simulationValue = null,
+            CancellationToken cancellationToken = default);
     }
 
     internal sealed class ProcessValueBuilder : IProcessValueBuilder, IProcessValueHandle
@@ -324,72 +370,28 @@ namespace Opc.Ua.Machinery.Server.Builders
             signal.ReferenceTypeId = Opc.Ua.Types.ReferenceTypeIds.HasComponent;
             signal.ModellingRuleId = NodeId.Null;
             processValue.CreateOrReplaceAnalogSignal(scope.Context, signal);
-            RepairInheritedPadimMembers(scope.Context, processValue, signal);
+            ApplyDefaultSignalTag(processValue);
 
             scope.RecordFacet(MachineryFacet.ProcessValues);
             return new ProcessValueBuilder(scope, processValue, signal);
         }
 
         /// <summary>
-        /// Repairs the two PADIM members the generator loses when the derived
-        /// OPC 40001-2 types are instantiated.
+        /// Applies the default <c>SignalTag</c> value.
         /// </summary>
         /// <remarks>
-        /// <para>
-        /// A member a model inherits from a <em>referenced</em> assembly's
-        /// payload comes out of the generator without its reference type, and
-        /// — where the declaring model re-declared it under a browse name from
-        /// another namespace — without the right browse-name namespace either.
-        /// Two members of OPC 40001-2 are affected:
-        /// <c>ProcessValueVariableType.EngineeringUnits</c>, which loses both,
-        /// and <c>ProcessValueType.SignalTag</c>, which loses the reference
-        /// type. This is the same family as the two cross-assembly gaps
-        /// <c>docs/Machinery.md</c> already records.
-        /// </para>
-        /// <para>
-        /// Neither is cosmetic. A node whose <c>ReferenceTypeId</c> is null
-        /// produces no reference in a filtered Browse, so a client sees
-        /// neither: <c>SignalTag</c> is mandatory on PADIM's
-        /// <c>AnalogSignalType</c>, and <c>EngineeringUnits</c> is where every
-        /// Data Access client reads the unit — which is also what the
-        /// <c>0:Data Access AnalogUnitType</c> unit of the OPC 40001-2 base
-        /// facet rests on.
-        /// </para>
-        /// <para>
-        /// Repaired here rather than left to the consumer, and pinned by
-        /// <c>MachineryProcessValueTests</c> over a real session.
-        /// </para>
+        /// OPC 30081 makes <c>SignalTag</c> mandatory and wants it unique; the
+        /// process value's own browse name is the one identifier the builder
+        /// can be sure of. <see cref="WithSignalTag"/> overrides it.
         /// </remarks>
-        private static void RepairInheritedPadimMembers(
-            ISystemContext context,
-            ProcessValueState processValue,
-            ProcessValueVariableState signal)
+        private static void ApplyDefaultSignalTag(ProcessValueState processValue)
         {
-            if (signal.EngineeringUnits != null)
-            {
-                signal.EngineeringUnits.ReferenceTypeId =
-                    Opc.Ua.ReferenceTypeIds.HasProperty;
-                if (signal.EngineeringUnits.BrowseName.NamespaceIndex != 0)
-                {
-                    signal.EngineeringUnits.BrowseName = new QualifiedName(
-                        Opc.Ua.BrowseNames.EngineeringUnits);
-                }
-            }
-
-            if (processValue.SignalTag == null)
+            if (processValue.SignalTag == null ||
+                !string.IsNullOrEmpty(processValue.SignalTag.Value))
             {
                 return;
             }
-            processValue.SignalTag.ReferenceTypeId = Opc.Ua.ReferenceTypeIds.HasProperty;
-
-            // SignalTag is mandatory and OPC 30081 wants it unique; the
-            // process value's own browse name is the one identifier the
-            // builder can be sure of. WithSignalTag overrides it.
-            if (string.IsNullOrEmpty(processValue.SignalTag.Value))
-            {
-                processValue.SignalTag.Value = processValue.BrowseName.Name ?? string.Empty;
-            }
-            _ = context;
+            processValue.SignalTag.Value = processValue.BrowseName.Name ?? string.Empty;
         }
 
         private ProcessValueBuilder(
@@ -416,6 +418,24 @@ namespace Opc.Ua.Machinery.Server.Builders
                     nameof(signalTag));
             }
             State.SignalTag!.Value = signalTag;
+            return this;
+        }
+
+        public IProcessValueBuilder WithSimulation(
+            double simulationValue = 0,
+            bool simulationState = false)
+        {
+            m_scope.EnsureMutable();
+            ISystemContext context = m_scope.Context;
+            Signal.AddActualValue(context, v => v.WrappedValue = Variant.From(m_value));
+            Signal.AddSimulationValue(
+                context,
+                v => v.WrappedValue = Variant.From(simulationValue));
+            Signal.AddSimulationState(context, v => v.Value = simulationState);
+            m_simulationValue = simulationValue;
+            m_simulating = simulationState;
+            m_scope.RecordFacet(MachineryFacet.ProcessValuesSimulation);
+            PublishReading(context);
             return this;
         }
 
@@ -624,7 +644,7 @@ namespace Opc.Ua.Machinery.Server.Builders
         {
             m_scope.EnsureMutable();
             m_value = value;
-            Signal.WrappedValue = Variant.From(value);
+            Signal.WrappedValue = Variant.From(Reported);
             UpdatePercentage();
             return this;
         }
@@ -744,15 +764,8 @@ namespace Opc.Ua.Machinery.Server.Builders
             CancellationToken cancellationToken = default)
         {
             _ = cancellationToken;
-            ISystemContext context = m_scope.Context;
             m_value = value;
-            Signal.WrappedValue = Variant.From(value);
-            Signal.Timestamp = DateTime.UtcNow;
-            UpdatePercentage();
-            Signal.ClearChangeMasks(context, includeChildren: true);
-
-            m_limitAlarm?.Evaluate(context, value);
-            EvaluateDeviation(context);
+            PublishReading(m_scope.Context);
             return default;
         }
 
@@ -793,13 +806,72 @@ namespace Opc.Ua.Machinery.Server.Builders
             return default;
         }
 
+        public ValueTask SetSimulationAsync(
+            bool simulationState,
+            double? simulationValue = null,
+            CancellationToken cancellationToken = default)
+        {
+            _ = cancellationToken;
+            if (Signal.SimulationState == null)
+            {
+                throw ServiceResultException.Create(
+                    StatusCodes.BadNotSupported,
+                    "The process value '{0}' publishes no simulation members.",
+                    State.BrowseName);
+            }
+            ISystemContext context = m_scope.Context;
+            if (simulationValue.HasValue)
+            {
+                m_simulationValue = simulationValue.Value;
+                Signal.SimulationValue!.WrappedValue = Variant.From(m_simulationValue);
+                Signal.SimulationValue.ClearChangeMasks(context, includeChildren: false);
+            }
+            m_simulating = simulationState;
+            Signal.SimulationState.Value = simulationState;
+            Signal.SimulationState.ClearChangeMasks(context, includeChildren: false);
+            PublishReading(context);
+            return default;
+        }
+
+        /// <summary>
+        /// Writes the reading a client sees and re-evaluates everything derived
+        /// from it.
+        /// </summary>
+        /// <remarks>
+        /// The reported value is the simulated one while OPC 30081 simulation
+        /// is active and the measured one otherwise; <c>ActualValue</c>, when
+        /// present, always carries the measured one.
+        /// </remarks>
+        private void PublishReading(ISystemContext context)
+        {
+            if (Signal.ActualValue != null)
+            {
+                Signal.ActualValue.WrappedValue = Variant.From(m_value);
+                Signal.ActualValue.Timestamp = DateTime.UtcNow;
+            }
+
+            Signal.WrappedValue = Variant.From(Reported);
+            Signal.Timestamp = DateTime.UtcNow;
+            UpdatePercentage();
+            Signal.ClearChangeMasks(context, includeChildren: true);
+
+            m_limitAlarm?.Evaluate(context, Reported);
+            EvaluateDeviation(context);
+        }
+
+        /// <summary>
+        /// The reading a client sees: the simulated one while OPC 30081
+        /// simulation is active, the measured one otherwise.
+        /// </summary>
+        private double Reported => m_simulating ? m_simulationValue : m_value;
+
         private void EvaluateDeviation(ISystemContext context)
         {
             if (m_deviationAlarm == null || !m_setpoint.HasValue)
             {
                 return;
             }
-            m_deviationAlarm.Evaluate(context, m_value - m_setpoint.Value);
+            m_deviationAlarm.Evaluate(context, Reported - m_setpoint.Value);
         }
 
         /// <summary>
@@ -815,7 +887,7 @@ namespace Opc.Ua.Machinery.Server.Builders
             {
                 return;
             }
-            double percentage = (m_value - range.Low) / (range.High - range.Low) * 100.0;
+            double percentage = (Reported - range.Low) / (range.High - range.Low) * 100.0;
             Signal.PercentageValue.WrappedValue = Variant.From(percentage);
         }
 
@@ -839,6 +911,8 @@ namespace Opc.Ua.Machinery.Server.Builders
             });
         }
 
+        private bool m_simulating;
+        private double m_simulationValue;
         private readonly MachineryBuildScope m_scope;
         private NodeId m_zeroPointEventTypeId = NodeId.Null;
         private MachineryProcessValueAlarm? m_limitAlarm;

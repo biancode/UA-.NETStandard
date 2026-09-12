@@ -75,6 +75,27 @@ namespace Opc.Ua.Machinery.Server.Builders
         IResultManagementBuilder WithFileTransfer();
 
         /// <summary>
+        /// Advertises <c>Machinery-Result PredefinedResultMetaData</c> and
+        /// enforces it.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The unit requires <em>every</em> exposed result to set
+        /// <c>ExternalRecipeId</c>, <c>InternalRecipeId</c>, <c>JobId</c>,
+        /// <c>ProductId</c>, <c>StepId</c> and <c>CreationTime</c>. All six are
+        /// optional fields of <c>ResultMetaDataType</c>, so only the
+        /// application knows whether its machine fills them — hence the opt-in.
+        /// </para>
+        /// <para>
+        /// Once opted in, publishing a result that leaves any of them unset is
+        /// refused, and a result handed back by a store the application brought
+        /// itself is refused as it leaves the store. The server therefore never
+        /// advertises the unit while exposing a result that breaks it.
+        /// </para>
+        /// </remarks>
+        IResultManagementBuilder WithPredefinedResultMetaData();
+
+        /// <summary>
         /// Adds the <c>Results</c> folder and the result variables published
         /// in it.
         /// </summary>
@@ -155,6 +176,13 @@ namespace Opc.Ua.Machinery.Server.Builders
             return this;
         }
 
+        public IResultManagementBuilder WithPredefinedResultMetaData()
+        {
+            m_scope.EnsureMutable();
+            m_predefinedMetaData = true;
+            return this;
+        }
+
         public IResultManagementBuilder WithResultsFolder(int publishedResults = 4)
         {
             if (publishedResults < 0)
@@ -186,6 +214,13 @@ namespace Opc.Ua.Machinery.Server.Builders
                     "IMachineryResultStore in the application services.");
             }
 
+            if (m_predefinedMetaData)
+            {
+                // Wrapped before anything binds to it so every read path -
+                // the three getters and the transfer manager - sees the check.
+                store = new PredefinedResultMetaDataStore(store);
+            }
+
             m_binder.BindMethods(store);
             if (m_scope.BuildContext.Manager is not AsyncCustomNodeManager manager)
             {
@@ -208,6 +243,10 @@ namespace Opc.Ua.Machinery.Server.Builders
             if (m_resultVariables is { Count: > 0 })
             {
                 m_scope.RecordFacet(MachineryFacet.ResultVariables);
+            }
+            if (m_predefinedMetaData)
+            {
+                m_scope.RecordFacet(MachineryFacet.ResultPredefinedMetaData);
             }
         }
 
@@ -262,6 +301,7 @@ namespace Opc.Ua.Machinery.Server.Builders
         private IMachineryResultPublisher? m_publisher;
         private MachineryResultVariables? m_resultVariables;
         private bool m_transferRequested;
+        private bool m_predefinedMetaData;
 
         private sealed class ResultPublisher : IMachineryResultPublisher
         {
@@ -290,6 +330,10 @@ namespace Opc.Ua.Machinery.Server.Builders
                         "Publishing requires the built-in in-memory result store; the " +
                         "custom store '{0}' owns its own ingestion path.",
                         m_store.GetType().FullName ?? m_store.GetType().Name);
+                }
+                if (m_owner.m_predefinedMetaData)
+                {
+                    PredefinedResultMetaData.Validate(result, onIngestion: true);
                 }
                 m_inMemoryStore.Add(result);
                 return m_owner.RaiseResultReadyAsync(result, cancellationToken);

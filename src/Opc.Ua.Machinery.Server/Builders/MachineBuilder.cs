@@ -32,6 +32,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Opc.Ua.Machinery.Server.Results;
+using Opc.Ua.PADIM;
 using Opc.Ua.Machinery.Server.StateMachines;
 using Opc.Ua.Server.Fluent;
 using MachineryBrowseNames = Opc.Ua.Machinery.BrowseNames;
@@ -239,6 +240,97 @@ namespace Opc.Ua.Machinery.Server.Builders
             return this;
         }
 
+        public IMachineBuilder<TState> WithProcessValueDevice(
+            QualifiedName browseName,
+            Action<MachineryIdentificationData> configureIdentification)
+        {
+            if (configureIdentification == null)
+            {
+                throw new ArgumentNullException(nameof(configureIdentification));
+            }
+            Scope.EnsureMutable();
+            Scope.EnsurePart(MachineryParts.ProcessValues, "ProcessValueDevice");
+            if (m_processValueDevice != null)
+            {
+                throw ServiceResultException.Create(
+                    StatusCodes.BadInvalidState,
+                    "The machine already declares a process-value device object.");
+            }
+
+            QualifiedName name = Qualify(browseName);
+            BaseObjectState device = MachineryBuilderUtilities.AddComponentChild(
+                Scope.Context,
+                State,
+                name,
+                static (_, parent, _) => new BaseObjectState(parent)
+                {
+                    TypeDefinitionId = Opc.Ua.Types.ObjectTypeIds.BaseObjectType
+                });
+            MachineryBuilderUtilities.AssignInstanceNodeIds(Scope.Context, device);
+
+            // The nameplate is the same MachineryComponentIdentificationType a
+            // machine component carries, so it goes through the same writer.
+            var blocks = new MachineryItemBlocks(Scope, device);
+            blocks.AddIdentification(asMachine: false, configureIdentification);
+
+            ushort padimNamespaceIndex = MachineryBuilderUtilities.NamespaceIndex(
+                Scope.Context,
+                Opc.Ua.PADIM.Namespaces.PADIM);
+            device.AddReference(
+                Opc.Ua.Types.ReferenceTypeIds.HasInterface,
+                false,
+                new NodeId(Opc.Ua.PADIM.ObjectTypes.ISignalSetType, padimNamespaceIndex));
+
+            SignalSetState signalSet = MachineryBuilderUtilities.AddComponentChild(
+                Scope.Context,
+                device,
+                new QualifiedName(
+                    Opc.Ua.PADIM.BrowseNames.SignalSet,
+                    padimNamespaceIndex),
+                static (ctx, parent, n) => ctx.CreateInstanceOfSignalSetType(parent, n));
+            MachineryBuilderUtilities.AssignInstanceNodeIds(Scope.Context, signalSet);
+
+            m_processValueDevice = device;
+            m_processValueSignalSet = signalSet;
+
+            // Linked once the whole machine is built, so the call order between
+            // WithProcessValue and WithProcessValueDevice does not matter.
+            Scope.PostRegistrationActions.Add(LinkProcessValueDeviceAsync);
+            Scope.RecordFacet(MachineryFacet.ProcessValuesDeviceObject);
+            Scope.RecordFacet(MachineryFacet.ProcessValuesSimpleDeviceInfo);
+            return this;
+        }
+
+        /// <summary>
+        /// Points the device object's <c>SignalSet</c> at every process value
+        /// the machine declares.
+        /// </summary>
+        /// <remarks>
+        /// A plain forward reference, not a child: OPC 40001-2 puts the process
+        /// values on the machine, and a node has one place in the hierarchy.
+        /// </remarks>
+        private ValueTask LinkProcessValueDeviceAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (m_processValueSignalSet == null)
+            {
+                return default;
+            }
+            foreach (QualifiedName processValueName in m_processValueNames)
+            {
+                if (State.FindChild(Scope.Context, processValueName) is not BaseInstanceState
+                    processValue)
+                {
+                    continue;
+                }
+                m_processValueSignalSet.AddReference(
+                    Opc.Ua.Types.ReferenceTypeIds.HasComponent,
+                    false,
+                    processValue.NodeId);
+            }
+            return default;
+        }
+
         public IMachineBuilder<TState> WithJobManagement(
             Action<IJobManagementBuilder>? configure = null)
         {
@@ -335,6 +427,8 @@ namespace Opc.Ua.Machinery.Server.Builders
 
         private readonly MachineryItemBlocks m_blocks;
         private readonly HashSet<QualifiedName> m_processValueNames = [];
+        private BaseObjectState? m_processValueDevice;
+        private SignalSetState? m_processValueSignalSet;
         private MachineryNotificationsBuilder? m_notifications;
         private JobManagementBuilder? m_jobManagement;
         private ResultManagementBuilder? m_results;

@@ -281,7 +281,37 @@ namespace Opc.Ua.Machinery.Server.Builders
                 asMachine
                     ? MachineryFacet.MachineIdentification
                     : MachineryFacet.ComponentIdentification);
+            if (data.Writable)
+            {
+                if (asMachine)
+                {
+                    Scope.RecordFacet(MachineryFacet.MachineIdentificationWritable);
+                }
+                else
+                {
+                    Scope.RecordFacet(MachineryFacet.ComponentIdentificationMandatory);
+                    Scope.RecordFacet(MachineryFacet.ComponentIdentificationWritable);
+                }
+            }
             return identification;
+        }
+
+        /// <summary>
+        /// Leaves a nameplate member writable for clients.
+        /// </summary>
+        /// <remarks>
+        /// Both access levels have to say so: a client checks
+        /// <c>UserAccessLevel</c>, and the server enforces on
+        /// <c>AccessLevel</c>.
+        /// </remarks>
+        private static void MakeWritable(BaseVariableState? variable)
+        {
+            if (variable == null)
+            {
+                return;
+            }
+            variable.AccessLevel = AccessLevels.CurrentReadOrWrite;
+            variable.UserAccessLevel = AccessLevels.CurrentReadOrWrite;
         }
 
         private void WriteIdentification(
@@ -319,13 +349,21 @@ namespace Opc.Ua.Machinery.Server.Builders
             {
                 identification.AddDeviceClass(Context, v => v.Value = data.DeviceClass);
             }
-            if (data.AssetId != null)
+            if (data.AssetId != null || data.Writable)
             {
-                identification.AddAssetId(Context, v => v.Value = data.AssetId);
+                identification.AddAssetId(Context, v => v.Value = data.AssetId!);
             }
-            if (!data.ComponentName.IsNull)
+            if (!data.ComponentName.IsNull || data.Writable)
             {
                 identification.AddComponentName(Context, v => v.Value = data.ComponentName);
+            }
+            if (data.Writable)
+            {
+                // The model declares all three with
+                // AccessLevel = CurrentRead | CurrentWrite; this is what makes
+                // the instance honour that rather than publish a read-only copy.
+                MakeWritable(identification.AssetId);
+                MakeWritable(identification.ComponentName);
             }
             if (data.InitialOperationDate.HasValue)
             {
@@ -355,9 +393,13 @@ namespace Opc.Ua.Machinery.Server.Builders
                         "OPC 40001-1 requires ProductInstanceUri on a machine identification.");
                 }
                 machine.ProductInstanceUri!.Value = data.ProductInstanceUri!;
-                if (data.Location != null)
+                if (data.Location != null || data.Writable)
                 {
-                    machine.AddLocation(Context, v => v.Value = data.Location);
+                    machine.AddLocation(Context, v => v.Value = data.Location!);
+                }
+                if (data.Writable)
+                {
+                    MakeWritable(machine.Location);
                 }
             }
             else

@@ -373,6 +373,15 @@ namespace Opc.Ua.Machinery.Server
             Add(
                 MachineryFacet.ComponentIdentification,
                 ConformanceUnitNames.ComponentIdentification);
+            Add(
+                MachineryFacet.MachineIdentificationWritable,
+                ConformanceUnitNames.MachineIdentificationWritable);
+            Add(
+                MachineryFacet.ComponentIdentificationMandatory,
+                ConformanceUnitNames.ComponentIdentificationMandatory);
+            Add(
+                MachineryFacet.ComponentIdentificationWritable,
+                ConformanceUnitNames.ComponentIdentificationWritable);
             Add(MachineryFacet.Components, ConformanceUnitNames.FindComponentsOfMachines);
             Add(
                 MachineryFacet.BuildingBlockOrganization,
@@ -421,6 +430,15 @@ namespace Opc.Ua.Machinery.Server
                 MachineryFacet.ProcessValueStatus,
                 ConformanceUnitNames.ProcessValuesAlarmSuppression);
             Add(
+                MachineryFacet.ProcessValuesSimulation,
+                ConformanceUnitNames.ProcessValuesSimulation);
+            Add(
+                MachineryFacet.ProcessValuesDeviceObject,
+                ConformanceUnitNames.ProcessValuesDeviceObject);
+            Add(
+                MachineryFacet.ProcessValuesSimpleDeviceInfo,
+                ConformanceUnitNames.ProcessValuesSimpleDeviceInfo);
+            Add(
                 MachineryFacet.ZeroPointAdjustment,
                 ConformanceUnitNames.ProcessValuesZeroPointAdjustmentEvents);
 
@@ -429,6 +447,14 @@ namespace Opc.Ua.Machinery.Server
                 MachineryFacet.JobManagement,
                 ConformanceUnitNames.JobManagementMinimumStringLength);
             Add(MachineryFacet.JobResults, ConformanceUnitNames.JobManagementResultBase);
+            for (int ii = 0;
+                ii < ConformanceUnitNames.JobPredefinedParameters.Length;
+                ii++)
+            {
+                Add(
+                    MachineryFacet.JobPredefinedParameters,
+                    ConformanceUnitNames.JobPredefinedParameters[ii]);
+            }
 
             Add(MachineryFacet.EnergyBaseStructure, ConformanceUnitNames.EnergyBaseStructure);
             Add(MachineryFacet.EnergyMainGrouping, ConformanceUnitNames.EnergyMainGrouping);
@@ -453,6 +479,9 @@ namespace Opc.Ua.Machinery.Server
             Add(MachineryFacet.ResultVariables, ConformanceUnitNames.ResultVariables);
             Add(MachineryFacet.ResultFiles, ConformanceUnitNames.ResultFiles);
             Add(MachineryFacet.ResultEvents, ConformanceUnitNames.ResultEvents);
+            Add(
+                MachineryFacet.ResultPredefinedMetaData,
+                ConformanceUnitNames.ResultPredefinedResultMetaData);
             return units;
 
             void Add(MachineryFacet facet, string unit)

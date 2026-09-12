@@ -52,6 +52,28 @@ namespace Opc.Ua.Machinery.Server.Builders
     public sealed class MachineryIdentificationData
     {
         /// <summary>
+        /// Publishes the writable nameplate members on every instance and
+        /// leaves them writable, satisfying OPC 40001-1's
+        /// <c>… Identification Writable</c> units.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The units require <c>2:AssetId</c>, <c>2:ComponentName</c> and — on
+        /// a machine — <c>Location</c> to be present on <em>all</em> instances,
+        /// not only where a value was supplied, and to stay writable. The
+        /// builder otherwise skips a member the configuration delegate left
+        /// unset, so the presence guarantee has to be asked for.
+        /// </para>
+        /// <para>
+        /// A server that sets this is accepting client writes to its
+        /// nameplate; the model declares the three with
+        /// <c>AccessLevel = CurrentRead | CurrentWrite</c>, and this is what
+        /// makes the instance honour that declaration.
+        /// </para>
+        /// </remarks>
+        public bool Writable { get; set; }
+
+        /// <summary>
         /// Manufacturer of the machinery item. Mandatory in OPC 40001-1.
         /// </summary>
         public LocalizedText Manufacturer { get; set; }

@@ -40,6 +40,22 @@ namespace Opc.Ua.Machinery.Server
         Machines,
         MachineIdentification,
         ComponentIdentification,
+
+        /// <summary>
+        /// The machine nameplate publishes its writable members on every
+        /// instance and leaves them writable.
+        /// </summary>
+        MachineIdentificationWritable,
+
+        /// <summary>
+        /// Every component nameplate publishes the mandatory members.
+        /// </summary>
+        ComponentIdentificationMandatory,
+
+        /// <summary>
+        /// Every component nameplate leaves its writable members writable.
+        /// </summary>
+        ComponentIdentificationWritable,
         Components,
         BuildingBlockOrganization,
         Monitoring,
@@ -60,9 +76,32 @@ namespace Opc.Ua.Machinery.Server
         ProcessValueDeviationAutoAdjustment,
         ProcessValueDeviationSensitivity,
         ProcessValuePercentage,
+
+        /// <summary>
+        /// At least one process value publishes the OPC 30081 simulation
+        /// members on its analog signal.
+        /// </summary>
+        ProcessValuesSimulation,
+
+        /// <summary>
+        /// A device object carries a nameplate and points at the process
+        /// values through OPC 30081's <c>ISignalSetType</c>.
+        /// </summary>
+        ProcessValuesDeviceObject,
+
+        /// <summary>
+        /// The device object's nameplate carries the simple device info.
+        /// </summary>
+        ProcessValuesSimpleDeviceInfo,
         ZeroPointAdjustment,
         JobManagement,
         JobResults,
+
+        /// <summary>
+        /// The predefined OPC 40001-3 job parameters are recognised and their
+        /// declared types enforced.
+        /// </summary>
+        JobPredefinedParameters,
         EnergyBaseStructure,
         EnergyMainGrouping,
         EnergyNonElectrical,
@@ -72,7 +111,12 @@ namespace Opc.Ua.Machinery.Server
         ResultManagement,
         ResultVariables,
         ResultFiles,
-        ResultEvents
+        ResultEvents,
+
+        /// <summary>
+        /// Every exposed result carries the predefined OPC 40001-101 metadata.
+        /// </summary>
+        ResultPredefinedMetaData
     }
 
     /// <summary>

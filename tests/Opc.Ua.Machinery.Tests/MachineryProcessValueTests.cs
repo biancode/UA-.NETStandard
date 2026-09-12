@@ -222,6 +222,122 @@ namespace Opc.Ua.Machinery.Tests
         }
 
         [Test]
+        public async Task SimulationReplacesTheReportedReadingAsync()
+        {
+            IProcessValueHandle? handle = null;
+            await m_context!
+                .AddMachine(new QualifiedName("Press-Simulated"))
+                .WithProcessValue(
+                    new QualifiedName("OilTemperature"),
+                    processValue => processValue
+                        .WithEngineeringUnits(
+                            DegreeCelsius(),
+                            new Opc.Ua.Range { Low = -20, High = 120 })
+                        .WithPercentageValue()
+                        .WithSimulation(simulationValue: 100)
+                        .WithValue(45)
+                        .Bind(out handle))
+                .BuildAsync();
+
+            Assert.That(handle, Is.Not.Null);
+            ProcessValueVariableState signal = handle!.Signal;
+
+            // OPC 30081 declares all three on AnalogSignalVariableType.
+            Assert.That(signal.ActualValue, Is.Not.Null);
+            Assert.That(signal.SimulationValue, Is.Not.Null);
+            Assert.That(signal.SimulationState, Is.Not.Null);
+            Assert.That(
+                signal.SimulationState!.Value,
+                Is.False,
+                "A server does not come up simulating unless asked to.");
+            Assert.That(signal.WrappedValue.TryGetValue(out double reported), Is.True);
+            Assert.That(reported, Is.EqualTo(45.0));
+
+            // While simulation is active the signal reports the simulated
+            // reading and ActualValue keeps carrying the measured one; that
+            // difference is the whole point of the unit.
+            await handle.SetSimulationAsync(true);
+            Assert.That(signal.WrappedValue.TryGetValue(out reported), Is.True);
+            Assert.That(reported, Is.EqualTo(100.0));
+            Assert.That(
+                signal.ActualValue!.WrappedValue.TryGetValue(out double actual),
+                Is.True);
+            Assert.That(actual, Is.EqualTo(45.0));
+
+            // Everything derived follows the reported value, because that is
+            // what the plant is acting on. Range -20 … 120 spans 140, so 100
+            // sits at 85.71 %.
+            Assert.That(
+                signal.PercentageValue!.WrappedValue.TryGetValue(out double percentage),
+                Is.True);
+            Assert.That(percentage, Is.EqualTo(85.714285).Within(0.001));
+
+            // A new measurement while simulating moves ActualValue only.
+            await handle.SetValueAsync(60.0);
+            Assert.That(signal.WrappedValue.TryGetValue(out reported), Is.True);
+            Assert.That(reported, Is.EqualTo(100.0));
+            Assert.That(signal.ActualValue.WrappedValue.TryGetValue(out actual), Is.True);
+            Assert.That(actual, Is.EqualTo(60.0));
+
+            // Switching simulation off hands the signal back to the plant.
+            await handle.SetSimulationAsync(false);
+            Assert.That(signal.WrappedValue.TryGetValue(out reported), Is.True);
+            Assert.That(reported, Is.EqualTo(60.0));
+        }
+
+        [Test]
+        public async Task SimulationIsRefusedWhenTheMembersAreAbsentAsync()
+        {
+            IProcessValueHandle handle = await BuildAsync();
+
+            Assert.That(
+                async () => await handle.SetSimulationAsync(true),
+                Throws.TypeOf<ServiceResultException>()
+                    .With.Message.Contains("no simulation members"));
+        }
+
+        [Test]
+        public async Task TheSignalTagOverrideReplacesTheDefaultAsync()
+        {
+            IProcessValueHandle? handle = null;
+            await m_context!
+                .AddMachine(new QualifiedName("Press-Tagged"))
+                .WithProcessValue(
+                    new QualifiedName("OilTemperature"),
+                    processValue => processValue
+                        .WithEngineeringUnits(
+                            DegreeCelsius(),
+                            new Opc.Ua.Range { Low = -20, High = 120 })
+                        .WithSignalTag("PRESS-1/TT-4711")
+                        .WithValue(45)
+                        .Bind(out handle))
+                .BuildAsync();
+
+            // The builder defaults SignalTag to the process value's browse
+            // name; OPC 30081 wants it unique across the plant, so an explicit
+            // tag has to win over that default.
+            Assert.That(handle, Is.Not.Null);
+            Assert.That(handle!.State.SignalTag, Is.Not.Null);
+            Assert.That(
+                handle.State.SignalTag!.Value,
+                Is.EqualTo("PRESS-1/TT-4711"));
+        }
+
+        [Test]
+        public void AnEmptySignalTagIsRefused()
+        {
+            Assert.That(
+                async () => await m_context!
+                    .AddMachine(new QualifiedName("Press-Untagged"))
+                    .WithProcessValue(
+                        new QualifiedName("OilTemperature"),
+                        processValue => processValue.WithSignalTag(string.Empty))
+                    .BuildAsync(),
+                Throws.ArgumentException,
+                "OPC 30081 requires a non-empty SignalTag.");
+        }
+
+        [Test]
         public async Task TheSignalKeepsThePadimBrowseNameAndTheNarrowerTypeAsync()
         {
             IProcessValueHandle handle = await BuildAsync();

@@ -171,6 +171,7 @@ namespace Opc.Ua.Machinery.Server.Builders
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 VerifyNodeIds();
+                VerifyEnergyMainGrouping();
 
                 Parent.AddChild((BaseInstanceState)Root);
                 await BuildContext.Manager
@@ -254,6 +255,79 @@ namespace Opc.Ua.Machinery.Server.Builders
                     nodes.Add(children[childIndex]);
                 }
             }
+        }
+
+        /// <summary>
+        /// Verifies the OPC 40001-4 <c>Machinery Energy Main grouping</c> unit.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// §8.1 requires every resource folder below <c>Monitoring/Consumption</c>
+        /// to carry a <c>Main</c> metering point that groups the resource's
+        /// readings. <see cref="MachineryEnergyBuilder"/> always creates
+        /// <c>Main</c> itself, so a resource the builder made satisfies the unit
+        /// by construction — but an application is free to attach a resource
+        /// folder to <c>Consumption</c> directly, and such a folder would make
+        /// the server advertise a unit it does not meet.
+        /// </para>
+        /// <para>
+        /// Checked here rather than in the energy builder precisely because the
+        /// folders worth checking are the ones the energy builder never saw.
+        /// </para>
+        /// </remarks>
+        private void VerifyEnergyMainGrouping()
+        {
+            BaseInstanceState? consumption = FindConsumptionFolder();
+            if (consumption == null)
+            {
+                return;
+            }
+
+            ushort energyNamespaceIndex = MachineryBuilderUtilities.NamespaceIndex(
+                Context,
+                Opc.Ua.Machinery.Energy.Namespaces.MachineryEnergy);
+            var mainName = new QualifiedName(
+                Opc.Ua.Machinery.Energy.BrowseNames.Main,
+                energyNamespaceIndex);
+
+            var resources = new List<BaseInstanceState>();
+            consumption.GetChildren(Context, resources);
+            for (int ii = 0; ii < resources.Count; ii++)
+            {
+                BaseInstanceState resource = resources[ii];
+                if (resource is not FolderState)
+                {
+                    continue;
+                }
+                if (resource.FindChild(Context, mainName) is not Opc.Ua.ECM.EnergyMeasurementState)
+                {
+                    throw ServiceResultException.Create(
+                        StatusCodes.BadConfigurationError,
+                        "OPC 40001-4 requires a Main metering point on every resource " +
+                        "folder below Monitoring/Consumption, but '{0}' on machine '{1}' " +
+                        "has none. Add it through the energy builder, or do not attach " +
+                        "the folder to Consumption.",
+                        resource.BrowseName,
+                        BrowseName);
+                }
+            }
+        }
+
+        private BaseInstanceState? FindConsumptionFolder()
+        {
+            ushort machineryNamespaceIndex = MachineryBuilderUtilities.NamespaceIndex(
+                Context,
+                Opc.Ua.Machinery.Namespaces.Machinery);
+            BaseInstanceState? monitoring = Root?.FindChild(
+                Context,
+                new QualifiedName(
+                    Opc.Ua.Machinery.BrowseNames.Monitoring,
+                    machineryNamespaceIndex));
+            return monitoring?.FindChild(
+                Context,
+                new QualifiedName(
+                    Opc.Ua.Machinery.BrowseNames.Consumption,
+                    machineryNamespaceIndex));
         }
 
         private static IMachineryBuildCoordinator GetBuildCoordinator(

@@ -66,6 +66,24 @@ namespace Opc.Ua.Machinery.Server
         /// <summary>A machine component publishes a component identification add-in.</summary>
         public const string ComponentIdentification = "Machinery Component Identification";
 
+        /// <summary>
+        /// The machine nameplate's writable members are present and writable.
+        /// </summary>
+        public const string MachineIdentificationWritable =
+            "Machinery Machine Identification Writable";
+
+        /// <summary>
+        /// Every component nameplate carries the mandatory members.
+        /// </summary>
+        public const string ComponentIdentificationMandatory =
+            "Machinery Component Identification Mandatory";
+
+        /// <summary>
+        /// Every component nameplate's writable members are present and writable.
+        /// </summary>
+        public const string ComponentIdentificationWritable =
+            "Machinery Component Identification Writable";
+
         /// <summary>A machine publishes its components.</summary>
         public const string FindComponentsOfMachines =
             "Machinery Find Components of Machines";
@@ -185,6 +203,31 @@ namespace Opc.Ua.Machinery.Server
         public const string ProcessValuesAlarmSuppression =
             "Machinery Process Values AlarmSuppression";
 
+        /// <summary>
+        /// At least one analog signal publishes OPC 30081's
+        /// <c>ActualValue</c>, <c>SimulationValue</c> and
+        /// <c>SimulationState</c>.
+        /// </summary>
+        /// <remarks>
+        /// The unit belongs to OPC 30081 PA-DIM, not to OPC 40001-2, and is
+        /// reproduced with the prefix the published table carries.
+        /// </remarks>
+        public const string ProcessValuesSimulation =
+            "PA-DIM AnalogSignalVariable Simulation";
+
+        /// <summary>
+        /// A device object implementing <c>ISignalSetType</c> points at the
+        /// process values.
+        /// </summary>
+        public const string ProcessValuesDeviceObject =
+            "Machinery Process Values Device Object";
+
+        /// <summary>
+        /// The device object publishes the simple device information.
+        /// </summary>
+        public const string ProcessValuesSimpleDeviceInfo =
+            "Machinery Process Values Simple Device Info";
+
         // ---- OPC 40001-3 Job Management ---------------------------------
 
         /// <summary>
@@ -192,6 +235,61 @@ namespace Opc.Ua.Machinery.Server
         /// a <c>MachineryBuildingBlocks</c> folder.
         /// </summary>
         public const string JobManagementBase = "Machinery Job Management Base";
+
+        /// <summary>
+        /// The conformance units of OPC 40001-3's predefined job parameters,
+        /// spelled exactly as §9 publishes them.
+        /// </summary>
+        /// <remarks>
+        /// Reported together, because the library recognises and type-checks
+        /// the whole predefined set rather than a subset of it. The names are
+        /// reproduced literally: a conformance tool compares them as strings.
+        /// </remarks>
+        public static readonly string[] JobPredefinedParameters =
+        [
+            "Machinery Job Management Planned ComponentName",
+            "Machinery Job Management Planned CustomerOrderNumbers",
+            "Machinery Job Management Planned Customers",
+            "Machinery Job Management Planned DrawingNumber",
+            "Machinery Job Management Planned DrawingVersionNumber",
+            "Machinery Job Management Planned ExecutionMode",
+            "Machinery Job Management Planned JobAnnotation",
+            "Machinery Job Management Planned JobName",
+            "Machinery Job Management Planned Location",
+            "Machinery Job Management Planned OrderNumbers",
+            "Machinery Job Management Planned PlannedDuration",
+            "Machinery Job Management Planned PlannedOrderQuantity",
+            "Machinery Job Management Planned PlannedProductionTime",
+            "Machinery Job Management Planned PlannedQuantityPerRun",
+            "Machinery Job Management Planned PlannedSetupTime",
+            "Machinery Job Management Planned PlannedTimePerRun",
+            "Machinery Job Management Planned RelatedContainer",
+            "Machinery Job Management Result ActualProductionTime",
+            "Machinery Job Management Result ActualQuantityCurrentRun",
+            "Machinery Job Management Result ActualUnitDelayTime",
+            "Machinery Job Management Result ActualUnitSetupTime",
+            "Machinery Job Management Result BOM",
+            "Machinery Job Management Result ComponentName",
+            "Machinery Job Management Result CustomerOrderNumbers",
+            "Machinery Job Management Result Customers",
+            "Machinery Job Management Result DrawingNumber",
+            "Machinery Job Management Result DrawingVersionNumber",
+            "Machinery Job Management Result EndTime",
+            "Machinery Job Management Result EstimatedRemainingTime",
+            "Machinery Job Management Result ExecutionMode",
+            "Machinery Job Management Result GoodQuantity",
+            "Machinery Job Management Result JobName",
+            "Machinery Job Management Result JobResult",
+            "Machinery Job Management Result Location",
+            "Machinery Job Management Result OrderNumbers",
+            "Machinery Job Management Result PerformanceInfo",
+            "Machinery Job Management Result ProducedQuantity",
+            "Machinery Job Management Result RelatedContainer",
+            "Machinery Job Management Result RunsCompleted",
+            "Machinery Job Management Result RunsStarted",
+            "Machinery Job Management Result StartTime",
+            "Machinery Job Management Planned Base",
+        ];
 
         /// <summary>
         /// The server accepts job-order strings of at least the length
@@ -269,6 +367,14 @@ namespace Opc.Ua.Machinery.Server
 
         /// <summary>Results are downloadable through the <c>ResultTransfer</c> object.</summary>
         public const string ResultFiles = "Machinery-Result ResultFiles";
+
+        /// <summary>
+        /// Every exposed result carries <c>ExternalRecipeId</c>,
+        /// <c>InternalRecipeId</c>, <c>JobId</c>, <c>ProductId</c>,
+        /// <c>StepId</c> and <c>CreationTime</c>.
+        /// </summary>
+        public const string ResultPredefinedResultMetaData =
+            "Machinery-Result PredefinedResultMetaData";
     }
 
     /// <summary>

@@ -38,6 +38,7 @@ using Opc.Ua.Machinery.ProcessValues;
 using Opc.Ua.Machinery.Result;
 using Opc.Ua.Machinery.Server;
 using Opc.Ua.Machinery.Server.Builders;
+using Opc.Ua.Machinery.Server.Jobs;
 using Opc.Ua.Machinery.Server.Results;
 using V2 = Opc.Ua.ISA95.JobControl.V2;
 
@@ -286,6 +287,431 @@ namespace Opc.Ua.Machinery.Tests
                     "http://opcfoundation.org/UA-Profile/Machinery/Energy/Server/Base"));
         }
 
+        [Test]
+        public void ThePredefinedJobParameterTableMatchesTheSpecification()
+        {
+            Assert.That(
+                MachineryJobParameters.All,
+                Has.Count.EqualTo(37),
+                "OPC 40001-3 §9 defines 37 predefined parameters.");
+
+            MachineryJobParameter? plannedOnly =
+                MachineryJobParameters.Find("PlannedSetupTime");
+            Assert.That(plannedOnly, Is.Not.Null);
+            Assert.That(
+                plannedOnly!.Scope,
+                Is.EqualTo(MachineryJobParameterScope.JobOrder));
+            Assert.That(plannedOnly.DataType, Is.EqualTo(BuiltInType.Double));
+
+            MachineryJobParameter? resultOnly =
+                MachineryJobParameters.Find("RunsCompleted");
+            Assert.That(resultOnly, Is.Not.Null);
+            Assert.That(
+                resultOnly!.Scope,
+                Is.EqualTo(MachineryJobParameterScope.JobResponse));
+
+            MachineryJobParameter? both = MachineryJobParameters.Find("JobName");
+            Assert.That(both, Is.Not.Null);
+            Assert.That(both!.Scope, Is.EqualTo(MachineryJobParameterScope.Both));
+            Assert.That(both.IsArray, Is.True);
+
+            Assert.That(
+                MachineryJobParameters.Find("VendorSpecificThing"),
+                Is.Null,
+                "A parameter the series does not predefine is not in the table.");
+        }
+
+        [Test]
+        public async Task APredefinedJobParameterWithTheWrongTypeIsRefusedAsync()
+        {
+            using var provider = new InMemoryIsa95JobControlProvider();
+            Opc.Ua.Machinery.Jobs.JobManagementState? jobManagement = null;
+            await NewMachine("Job-Parameter-Machine")
+                .WithJobManagement(jobs =>
+                {
+                    jobManagement = jobs.State;
+                    jobs.WithJobOrderReceiver(provider).WithPredefinedParameters();
+                })
+                .BuildAsync();
+
+            // PlannedSetupTime is a Duration, i.e. a Double. Sending a string
+            // would leave the server advertising a unit it does not honour.
+            var jobOrder = new V2.ISA95JobOrderDataType
+            {
+                JobOrderID = "JO-wrong-type",
+                JobOrderParameters = new[]
+                {
+                    new V2.ISA95ParameterDataType
+                    {
+                        ID = "PlannedSetupTime",
+                        Value = Variant.From("not a duration")
+                    }
+                }.ToArrayOf()
+            };
+
+            ServiceResultException exception =
+                Assert.ThrowsAsync<ServiceResultException>(
+                    async () => await StoreAsync(jobManagement!, jobOrder))!;
+            Assert.That(exception.Message, Does.Contain("PlannedSetupTime"));
+            Assert.That(exception.Message, Does.Contain("Duration"));
+
+            QualifiedName[] units = [.. m_fixture!.Manager.ConformanceUnits];
+            Assert.That(
+                units,
+                Contains.Item(
+                    new QualifiedName("Machinery Job Management Planned PlannedSetupTime")));
+            Assert.That(
+                units,
+                Contains.Item(
+                    new QualifiedName("Machinery Job Management Result RunsCompleted")));
+        }
+
+        [Test]
+        public async Task AJobParameterTheSeriesDoesNotPredefineTravelsUntouchedAsync()
+        {
+            using var provider = new InMemoryIsa95JobControlProvider();
+            Opc.Ua.Machinery.Jobs.JobManagementState? jobManagement = null;
+            await NewMachine("Job-Passthrough-Machine")
+                .WithJobManagement(jobs =>
+                {
+                    jobManagement = jobs.State;
+                    jobs.WithJobOrderReceiver(provider).WithPredefinedParameters();
+                })
+                .BuildAsync();
+
+            var jobOrder = new V2.ISA95JobOrderDataType
+            {
+                JobOrderID = "JO-vendor",
+                JobOrderParameters = new[]
+                {
+                    new V2.ISA95ParameterDataType
+                    {
+                        ID = "AcmeTorqueProfile",
+                        Value = Variant.From("whatever the vendor likes")
+                    }
+                }.ToArrayOf()
+            };
+
+            Assert.That(
+                async () => await StoreAsync(jobManagement!, jobOrder),
+                Throws.Nothing,
+                "OPC 40001-3 lets a parameter it does not predefine travel untouched.");
+        }
+
+        [Test]
+        public async Task TheDeviceObjectPointsAtTheProcessValuesAsync()
+        {
+            IMachineHandle<BaseObjectState> machine = await NewMachine("Device-Object-Machine")
+                .WithProcessValue(
+                    new QualifiedName("OilTemperature"),
+                    processValue => processValue.WithValue(45))
+                .WithProcessValue(
+                    new QualifiedName("RamPosition"),
+                    processValue => processValue.WithValue(12))
+                .WithProcessValueDevice(
+                    new QualifiedName("SensorBlock"),
+                    id =>
+                    {
+                        id.Manufacturer = new LocalizedText("Acme");
+                        id.SerialNumber = "SB-1";
+                    })
+                .BuildAsync();
+
+            Opc.Ua.Server.ServerSystemContext context = m_fixture!.Manager.SystemContext;
+            ushort instanceNamespaceIndex =
+                m_fixture.Manager.MachineryInstanceNamespaceIndex;
+            ushort padimNamespaceIndex = NamespaceIndex(Opc.Ua.PADIM.Namespaces.PADIM);
+
+            NodeState? device = machine.State.FindChild(
+                context,
+                new QualifiedName("SensorBlock", instanceNamespaceIndex));
+            Assert.That(device, Is.Not.Null);
+
+            // The nameplate is what makes the device object worth having: the
+            // process values carry no identification of their own.
+            var children = new List<BaseInstanceState>();
+            device!.GetChildren(context, children);
+            Assert.That(
+                children.Find(
+                    child => child.BrowseName.Name == Opc.Ua.Di.BrowseNames.Identification),
+                Is.Not.Null,
+                "The device object carries a MachineryComponentIdentification add-in.");
+
+            Assert.That(
+                device.ReferenceExists(
+                    Opc.Ua.ReferenceTypeIds.HasInterface,
+                    false,
+                    new NodeId(
+                        Opc.Ua.PADIM.ObjectTypes.ISignalSetType,
+                        padimNamespaceIndex)),
+                Is.True,
+                "OPC 40001-2 reaches the process values through ISignalSetType.");
+
+            NodeState? signalSet = device.FindChild(
+                context,
+                new QualifiedName(
+                    Opc.Ua.PADIM.BrowseNames.SignalSet,
+                    padimNamespaceIndex));
+            Assert.That(signalSet, Is.Not.Null);
+
+            // The SignalSet references the process values; they keep hanging
+            // off the machine, which is where OPC 40001-2 puts them.
+            foreach (string name in new[] { "OilTemperature", "RamPosition" })
+            {
+                NodeState? processValue = machine.State.FindChild(
+                    context,
+                    new QualifiedName(name, instanceNamespaceIndex));
+                Assert.That(processValue, Is.Not.Null, name);
+                Assert.That(
+                    signalSet!.ReferenceExists(
+                        Opc.Ua.ReferenceTypeIds.HasComponent,
+                        false,
+                        processValue!.NodeId),
+                    Is.True,
+                    $"The SignalSet has to point at '{name}'.");
+            }
+
+            QualifiedName[] units = [.. m_fixture.Manager.ConformanceUnits];
+            Assert.That(
+                units,
+                Contains.Item(new QualifiedName("Machinery Process Values Device Object")));
+            Assert.That(
+                units,
+                Contains.Item(
+                    new QualifiedName("Machinery Process Values Simple Device Info")));
+        }
+
+        [Test]
+        public async Task WritableIdentificationPublishesTheNameplateMembersAsync()
+        {
+            IMachineHandle<BaseObjectState> machine =
+                await m_context!
+                    .AddMachine(new QualifiedName("Writable-Nameplate-Machine"))
+                    .WithIdentification(id =>
+                    {
+                        id.Manufacturer = new LocalizedText("Acme");
+                        id.SerialNumber = "SN-W";
+                        id.ProductInstanceUri = "urn:acme:writable";
+                        id.Writable = true;
+
+                        // Deliberately no AssetId, ComponentName or Location:
+                        // the unit wants them on every instance, not only where
+                        // the application had a value to put in them.
+                    })
+                    .WithComponents(components => components.AddComponent(
+                        new QualifiedName("Gearbox"),
+                        component => component.WithIdentification(id =>
+                        {
+                            id.Manufacturer = new LocalizedText("Acme");
+                            id.SerialNumber = "GB-1";
+                            id.Writable = true;
+                        })))
+                    .BuildAsync();
+
+            Opc.Ua.Server.ServerSystemContext context = m_fixture!.Manager.SystemContext;
+
+            // The nameplate is a DI FunctionalGroup, so its browse name comes
+            // from OPC 10000-100, not from the Machinery namespace.
+            var children = new List<BaseInstanceState>();
+            machine.State.GetChildren(context, children);
+            var identification = children.Find(
+                child => child.BrowseName.Name == Opc.Ua.Di.BrowseNames.Identification)
+                as MachineIdentificationState;
+            Assert.That(identification, Is.Not.Null);
+
+            Assert.That(
+                identification!.AssetId,
+                Is.Not.Null,
+                "The unit requires AssetId on every instance.");
+            Assert.That(identification.ComponentName, Is.Not.Null);
+            Assert.That(
+                identification.Location,
+                Is.Not.Null,
+                "Location is the machine-only member of the writable nameplate.");
+
+            // A read-only copy would satisfy presence but not the unit.
+            Assert.That(
+                identification.AssetId!.AccessLevel,
+                Is.EqualTo(AccessLevels.CurrentReadOrWrite));
+            Assert.That(
+                identification.AssetId.UserAccessLevel,
+                Is.EqualTo(AccessLevels.CurrentReadOrWrite),
+                "A client decides from UserAccessLevel whether it may write.");
+            Assert.That(
+                identification.Location!.AccessLevel,
+                Is.EqualTo(AccessLevels.CurrentReadOrWrite));
+
+            QualifiedName[] units = [.. m_fixture.Manager.ConformanceUnits];
+            Assert.That(
+                units,
+                Contains.Item(
+                    new QualifiedName("Machinery Machine Identification Writable")));
+            Assert.That(
+                units,
+                Contains.Item(
+                    new QualifiedName("Machinery Component Identification Mandatory")));
+            Assert.That(
+                units,
+                Contains.Item(
+                    new QualifiedName("Machinery Component Identification Writable")));
+        }
+
+        [Test]
+        public void AResourceFolderWithoutAMainMeteringPointIsRefused()
+        {
+            ushort energyNamespaceIndex = NamespaceIndex(
+                Opc.Ua.Machinery.Energy.Namespaces.MachineryEnergy);
+            ushort instanceNamespaceIndex =
+                m_fixture!.Manager.MachineryInstanceNamespaceIndex;
+
+            IMachineBuilder<BaseObjectState> builder = NewMachine("Rogue-Energy-Machine")
+                .WithMonitoring(monitoring => monitoring.WithConsumption(consumption =>
+                {
+                    // A resource folder hung straight off Consumption, the way
+                    // an application composing its own address space would do
+                    // it. OPC 40001-4 §8.1 wants a Main below it; there is none.
+                    var rogue = new FolderState(consumption)
+                    {
+                        NodeId = new NodeId("Rogue-Steam", instanceNamespaceIndex),
+                        BrowseName = new QualifiedName("Steam", energyNamespaceIndex),
+                        DisplayName = new LocalizedText("Steam"),
+                        TypeDefinitionId = Opc.Ua.ObjectTypeIds.FolderType,
+                        ReferenceTypeId = Opc.Ua.ReferenceTypeIds.Organizes
+                    };
+                    consumption.AddChild(rogue);
+                }));
+
+            ServiceResultException exception =
+                Assert.ThrowsAsync<ServiceResultException>(
+                    async () => await builder.BuildAsync())!;
+            Assert.That(exception.Message, Does.Contain("Main metering point"));
+            Assert.That(exception.Message, Does.Contain("Steam"));
+        }
+
+        [Test]
+        public async Task AMeteringPointCanPublishMassFlowAsync()
+        {
+            IMachineHandle<BaseObjectState> machine = await NewMachine("MassFlow-Machine")
+                .WithEnergy(energy => energy.AddResource(
+                    MachineryEnergyCarrier.CompressedAir,
+                    air => air.Main
+                        .WithApplicationTag("air")
+                        .WithMassFlow(48.5f, 1.25f)))
+                .BuildAsync();
+
+            Opc.Ua.Server.ServerSystemContext context = m_fixture!.Manager.SystemContext;
+            ushort machineryNamespaceIndex = NamespaceIndex(
+                Opc.Ua.Machinery.Namespaces.Machinery);
+            ushort energyNamespaceIndex = NamespaceIndex(
+                Opc.Ua.Machinery.Energy.Namespaces.MachineryEnergy);
+            ushort ecmNamespaceIndex = NamespaceIndex(Opc.Ua.ECM.Namespaces.ECM);
+
+            NodeState? monitoring = machine.State.FindChild(
+                context,
+                new QualifiedName(BrowseNames.Monitoring, machineryNamespaceIndex));
+            NodeState? consumption = monitoring?.FindChild(
+                context,
+                new QualifiedName(BrowseNames.Consumption, machineryNamespaceIndex));
+            NodeState? air = consumption?.FindChild(
+                context,
+                new QualifiedName(
+                    Opc.Ua.Machinery.Energy.BrowseNames.CompressedAir,
+                    energyNamespaceIndex));
+            var main = air?.FindChild(
+                context,
+                new QualifiedName(
+                    Opc.Ua.Machinery.Energy.BrowseNames.Main,
+                    energyNamespaceIndex)) as Opc.Ua.ECM.EnergyMeasurementState;
+            Assert.That(main, Is.Not.Null);
+
+            // OPC 40001-4 reports mass flow through the OPC 34100 interface
+            // rather than through members of its own, so the interface
+            // reference is as much part of the claim as the two readings.
+            Assert.That(
+                main!.ReferenceExists(
+                    Opc.Ua.ReferenceTypeIds.HasInterface,
+                    false,
+                    new NodeId(
+                        Opc.Ua.Machinery.Energy.ObjectTypes.IMassFlowType,
+                        energyNamespaceIndex)),
+                Is.True,
+                "WithMassFlow has to implement IMassFlowType.");
+
+            var mass = main.FindChild(
+                context,
+                new QualifiedName("Mass", ecmNamespaceIndex))
+                as Opc.Ua.ECM.EnergyMeasurementValueState;
+            Assert.That(mass, Is.Not.Null);
+            Assert.That(mass!.WrappedValue.TryGetValue(out float massValue), Is.True);
+            Assert.That(massValue, Is.EqualTo(48.5f));
+
+            var rate = main.FindChild(
+                context,
+                new QualifiedName("MassFlowRate", ecmNamespaceIndex))
+                as Opc.Ua.ECM.EnergyMeasurementValueState;
+            Assert.That(rate, Is.Not.Null);
+            Assert.That(rate!.WrappedValue.TryGetValue(out float rateValue), Is.True);
+            Assert.That(rateValue, Is.EqualTo(1.25f));
+        }
+
+        [Test]
+        public async Task MonitoringCanPublishAStacklightAsync()
+        {
+            IMachineHandle<BaseObjectState> machine = await NewMachine("Stacklight-Machine")
+                .WithMonitoring(monitoring => monitoring.WithStacklight())
+                .BuildAsync();
+
+            Opc.Ua.Server.ServerSystemContext context = m_fixture!.Manager.SystemContext;
+            ushort machineryNamespaceIndex = NamespaceIndex(
+                Opc.Ua.Machinery.Namespaces.Machinery);
+
+            // The stacklight is the single edge that makes OPC 10000-200 a
+            // dependency of the machine model, and it hangs below
+            // Monitoring/Status rather than off Monitoring itself.
+            NodeState? monitoringNode = machine.State.FindChild(
+                context,
+                new QualifiedName(BrowseNames.Monitoring, machineryNamespaceIndex));
+            NodeState? status = monitoringNode?.FindChild(
+                context,
+                new QualifiedName(BrowseNames.Status, machineryNamespaceIndex));
+            Assert.That(status, Is.Not.Null, "WithStacklight creates the Status folder.");
+
+            NodeState? stacklight = status!.FindChild(
+                context,
+                new QualifiedName(BrowseNames.Stacklight, machineryNamespaceIndex));
+            Assert.That(
+                stacklight,
+                Is.InstanceOf<Opc.Ua.IA.BasicStacklightState>(),
+                "The stacklight is an OPC 10000-200 BasicStacklightType.");
+        }
+
+        /// <summary>
+        /// Calls the ISA-95 <c>Store</c> verb the way a client would, so the
+        /// parameter check runs on the real ingestion path.
+        /// </summary>
+        private async Task StoreAsync(
+            Opc.Ua.Machinery.Jobs.JobManagementState jobManagement,
+            V2.ISA95JobOrderDataType jobOrder)
+        {
+            V2.ISA95JobOrderReceiverObjectState control = jobManagement.JobOrderControl!;
+            var outputs = new List<Variant>();
+            var errors = new List<ServiceResult>();
+            ServiceResult status = await control.Store!.CallAsync(
+                m_fixture!.Manager.SystemContext,
+                control.NodeId,
+                new Variant[]
+                {
+                    Variant.FromStructure(jobOrder),
+                    Variant.From(default(ArrayOf<LocalizedText>))
+                }.ToArrayOf(),
+                errors,
+                outputs);
+            if (ServiceResult.IsBad(status))
+            {
+                throw new ServiceResultException(status);
+            }
+        }
+
         private ushort NamespaceIndex(string namespaceUri)
         {
             return (ushort)m_fixture!.Manager.Server.NamespaceUris.GetIndex(namespaceUri);
@@ -314,6 +740,84 @@ namespace Opc.Ua.Machinery.Tests
                 Is.Not.Null,
                 "The download path must be wired.");
             Assert.That(machine.Results, Is.Not.Null);
+        }
+
+        [Test]
+        public async Task AResultMissingThePredefinedMetaDataIsRefusedAsync()
+        {
+            IMachineHandle<BaseObjectState> machine =
+                await NewMachine("Predefined-MetaData-Machine")
+                    .WithResultManagement(results => results
+                        .WithInMemoryStore()
+                        .WithPredefinedResultMetaData())
+                    .BuildAsync();
+
+            // ResultId alone is what every other result test publishes; the
+            // unit needs six more fields on top of it.
+            ServiceResultException exception =
+                Assert.ThrowsAsync<ServiceResultException>(
+                    async () => await machine.Results!.PublishAsync(
+                        new MachineryResult(
+                            new ResultDataType
+                            {
+                                ResultMetaData = new ResultMetaDataType { ResultId = "R-thin" }
+                            })))!;
+
+            Assert.That(exception.Message, Does.Contain("PredefinedResultMetaData"));
+            Assert.That(exception.Message, Does.Contain("ExternalRecipeId"));
+            Assert.That(exception.Message, Does.Contain("CreationTime"));
+        }
+
+        [Test]
+        public async Task AResultCarryingThePredefinedMetaDataIsPublishedAsync()
+        {
+            ResultManagementState? management = null;
+            IMachineHandle<BaseObjectState> machine =
+                await NewMachine("Predefined-MetaData-Complete-Machine")
+                    .WithResultManagement(results =>
+                    {
+                        management = results.State;
+                        results.WithInMemoryStore().WithPredefinedResultMetaData();
+                    })
+                    .BuildAsync();
+
+            await machine.Results!.PublishAsync(
+                new MachineryResult(
+                    new ResultDataType
+                    {
+                        ResultMetaData = new ResultMetaDataType
+                        {
+                            ResultId = "R-full",
+                            ExternalRecipeId = "ER-1",
+                            InternalRecipeId = "IR-1",
+                            JobId = "J-1",
+                            ProductId = "P-1",
+                            StepId = "S-1",
+                            CreationTime = new DateTime(2026, 9, 12, 8, 0, 0, DateTimeKind.Utc)
+                        }
+                    }));
+
+            var outputs = new List<Variant>();
+            var errors = new List<ServiceResult>();
+            ServiceResult status = await management!.GetLatestResult!.CallAsync(
+                m_fixture!.Manager.SystemContext,
+                management.NodeId,
+                new Variant[] { Variant.From(0) }.ToArrayOf(),
+                errors,
+                outputs);
+
+            Assert.That(ServiceResult.IsGood(status), Is.True, status.ToString());
+            Assert.That(
+                outputs[1].TryGetStructure<ResultDataType>(out ResultDataType? data),
+                Is.True);
+            Assert.That(data!.ResultMetaData!.JobId, Is.EqualTo("J-1"));
+
+            // The unit is only advertised once a build actually enforced it.
+            QualifiedName[] units = [.. m_fixture.Manager.ConformanceUnits];
+            Assert.That(
+                units,
+                Contains.Item(
+                    new QualifiedName("Machinery-Result PredefinedResultMetaData")));
         }
 
         [Test]

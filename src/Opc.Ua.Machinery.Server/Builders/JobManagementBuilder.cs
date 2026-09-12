@@ -31,6 +31,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Opc.Ua.ISA95.Server.Providers;
+using Opc.Ua.Machinery.Server.Jobs;
 using Opc.Ua.Machinery.Jobs;
 using MachineryJobsBrowseNames = Opc.Ua.Machinery.Jobs.BrowseNames;
 using V2 = Opc.Ua.ISA95.JobControl.V2;
@@ -79,6 +80,24 @@ namespace Opc.Ua.Machinery.Server.Builders
         /// </summary>
         /// <param name="provider">The response provider to bind.</param>
         IJobManagementBuilder WithJobResponseProvider(IIsa95JobResponseProviderV2 provider);
+
+        /// <summary>
+        /// Advertises the predefined OPC 40001-3 job parameters and enforces
+        /// their declared types.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// OPC 40001-3 §9 gives each predefined parameter a conformance unit of
+        /// its own. The parameters travel inside the ISA-95 payload rather than
+        /// as nodes, so a server can only claim them by recognising the IDs and
+        /// refusing one that arrives carrying the wrong type — which is what
+        /// this turns on.
+        /// </para>
+        /// <para>
+        /// Parameters the series does not predefine keep travelling untouched.
+        /// </para>
+        /// </remarks>
+        IJobManagementBuilder WithPredefinedParameters();
 
         /// <summary>
         /// Publishes the downloadable job-order list from
@@ -150,6 +169,13 @@ namespace Opc.Ua.Machinery.Server.Builders
             return this;
         }
 
+        public IJobManagementBuilder WithPredefinedParameters()
+        {
+            m_scope.EnsureMutable();
+            m_predefinedParameters = true;
+            return this;
+        }
+
         private async ValueTask BindAsync(CancellationToken cancellationToken)
         {
             IIsa95JobOrderReceiverV2? receiver = m_receiver ??
@@ -161,6 +187,12 @@ namespace Opc.Ua.Machinery.Server.Builders
                     "OPC 40001-3 JobManagement needs an ISA-95 Job Control V2 job-order " +
                     "receiver. Register one with AddInMemoryIsa95JobControlProvider() or " +
                     "supply it through WithJobOrderReceiver().");
+            }
+
+            if (m_predefinedParameters)
+            {
+                receiver = new PredefinedParameterJobOrderReceiver(receiver);
+                m_scope.RecordFacet(MachineryFacet.JobPredefinedParameters);
             }
 
             V2.ISA95JobOrderReceiverObjectState control = State.JobOrderControl!;
@@ -225,6 +257,7 @@ namespace Opc.Ua.Machinery.Server.Builders
         private IIsa95JobResponseProviderV2? m_responseProvider;
         private IIsa95JobOrderCatalog? m_catalog;
         private ArrayOf<V2.ISA95JobOrderAndStateDataType> m_jobOrders = [];
+        private bool m_predefinedParameters;
         private long m_refreshGeneration;
         private long m_appliedGeneration;
     }

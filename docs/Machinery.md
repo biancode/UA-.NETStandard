@@ -339,15 +339,15 @@ generated factory alone would leave the PADIM type in place and
 `WithLimits(...)` would have nowhere to write.
 
 Substituting the subtype costs one repair. Two PADIM members the derived types
-inherit come out of the generator without their reference type — and, for
-`EngineeringUnits`, without its namespace-0 browse name — when
+inherit used to come out of the generator without their reference type — and,
+for `EngineeringUnits`, without its namespace-0 browse name — when
 `ProcessValueVariableType` is instantiated on its own, which is exactly the path
 the substitution takes. A node whose `ReferenceTypeId` is null is in the node
 tree but produces no reference in a filtered Browse, so no client ever sees it:
 `SignalTag` is mandatory on PADIM's `AnalogSignalType`, and `EngineeringUnits`
 is where every Data Access client reads the unit — and what the
 `0:Data Access AnalogUnitType` unit of the OPC 40001-2 base facet rests on.
-`ProcessValueBuilder.RepairInheritedPadimMembers` puts both back; see
+The generator carries both through the dependency payload now; see
 [Generator gaps](#generator-gaps-found-while-adding-these-models).
 
 ### OPC 40001-3 job management
@@ -613,7 +613,7 @@ A server that builds no machine therefore advertises nothing but
 | Machinery equipment (`Machinery MachineryEquipment`) incl. `EquipmentLife` | ✅ | ✅ | same | `MachineBuilderTests`; `MachineryEndToEndTests` |
 | Notifications (`Machinery Notifications`) with a publish seam | ✅ | ✅ | [`MachineryNotificationsBuilder`](../src/Opc.Ua.Machinery.Server/Builders/MachineryNotificationsBuilder.cs) | `MachineBuilderTests` |
 | Stacklight over OPC 10000-200 IA | ✅ | 🔲 | [`MonitoringBuilder`](../src/Opc.Ua.Machinery.Server/Builders/MachineryBlockBuilders.cs) | `MachineBuilderTests` |
-| Writable identification (`… Writable`, `Component Identification Mandatory`) | ✅ | ❌ not advertised — the builder publishes identification read-only | — | — |
+| Writable identification (`Machinery Machine Identification Writable`, `Component Identification Mandatory`, `Component Identification Writable`) | ✅ | ✅ opt-in via `MachineryIdentificationData.Writable` | [`MachineryBlockBuilders`](../src/Opc.Ua.Machinery.Server/Builders/MachineryBlockBuilders.cs) | `MachineryPartsBuilderTests` |
 
 ### OPC 40001-2 process values
 
@@ -628,8 +628,8 @@ A server that builds no machine therefore advertises nothing but
 | `PercentageValue` kept in step with the range (`… Percentage Value`) | ✅ | ✅ | [`ProcessValueBuilder`](../src/Opc.Ua.Machinery.Server/Builders/ProcessValueBuilder.cs) | `MachineryProcessValueTests` |
 | `Status` and `AlarmSuppression` (`… Monitoring`, `… AlarmSuppression`) | ✅ | ✅ | same | `MachineryProcessValueTests` |
 | `ZeroPointAdjustment` method and its event (`… Base EventTypes`, `… ZeroPointAdjustment Events`) | ✅ | ✅ | same | `MachineryProcessValueTests`; `MachineryEndToEndTests` |
-| Simulation (`3:PA-DIM AnalogSignalVariable Simulation`) | ✅ | 🔲 | model only — the PA-DIM simulation members are untouched | — |
-| Device object (`… Device Object`, `… Simple Device Info`) | ✅ | ❌ not advertised — the builder does not compose PA-DIM's `ISignalSet` | — | — |
+| Simulation (`PA-DIM AnalogSignalVariable Simulation`) | ✅ | ✅ opt-in via `WithSimulation()` | [`ProcessValueBuilder`](../src/Opc.Ua.Machinery.Server/Builders/ProcessValueBuilder.cs) | `MachineryProcessValueTests` |
+| Device object (`… Device Object`, `… Simple Device Info`) | ✅ | ✅ opt-in via `WithProcessValueDevice()` | [`MachineBuilder`](../src/Opc.Ua.Machinery.Server/Builders/MachineBuilder.cs) | `MachineryPartsBuilderTests` |
 
 ### OPC 40001-3 job management
 
@@ -637,14 +637,14 @@ A server that builds no machine therefore advertises nothing but
 |---|---|---|---|---|
 | `JobManagement` as an AddIn under the organizer, composing ISA-95 Job Control V2 (`Machinery Job Management Base`, `… Minimum String Length`) | ✅ | ✅ | [`JobManagementBuilder`](../src/Opc.Ua.Machinery.Server/Builders/JobManagementBuilder.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
 | Job results (`Machinery Job Management Result Base`) | ✅ | ✅ | same | `MachineryPartsBuilderTests` |
-| The predefined `Planned …` / `Result …` job-order parameters | ✅ | 📄 | model only — the parameters travel through the ISA-95 payload untouched | — |
+| The predefined `Planned …` / `Result …` job-order parameters (42 units) | ✅ | ✅ opt-in via `WithPredefinedParameters()` — the 37 IDs of §9 are recognised and their declared types enforced; anything the series does not predefine still travels untouched | [`MachineryJobParameters`](../src/Opc.Ua.Machinery.Server/Jobs/MachineryJobParameters.cs) | `MachineryPartsBuilderTests` |
 
 ### OPC 40001-4 energy
 
 | Area | Static | Runtime | Source | Tests |
 |---|---|---|---|---|
 | Resource folders below `Monitoring/Consumption` (`Machinery Energy Base Structure`) | ✅ | ✅ | [`MachineryEnergyBuilder`](../src/Opc.Ua.Machinery.Server/Builders/MachineryEnergyBuilder.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
-| A `Main` metering point per resource (`Machinery Energy Main grouping`) | ✅ | ✅ | same | same |
+| A `Main` metering point per resource (`Machinery Energy Main grouping`) | ✅ | ✅ — checked at build time, so a resource folder attached to `Consumption` past the builder fails the build instead of breaking the unit | same; check in [`MachineryBuildScope`](../src/Opc.Ua.Machinery.Server/Builders/MachineryBuildScope.cs) | same; `MachineryPartsBuilderTests` |
 | `INonElectricalEnergyType` on a metering point (`… Non Electrical Base`) | ✅ | ✅ | same | same |
 | Volume- and mass-flow interfaces (`… Volume Flow`, `… Mass Flow`) | ✅ | ✅ | same | `MachineryPartsBuilderTests` |
 | `Contains` from `Main` to a sub-meter (`Machinery Energy Contains`) | ✅ | ✅ | same | same |
@@ -658,10 +658,10 @@ A server that builds no machine therefore advertises nothing but
 | The five optional methods (`… GetLatestResult`, `… GetResultById`, `… GetResultsFiltered`, `Machinery Result AcknowledgeResults`) | ✅ | ✅ | same | `MachineryPartsBuilderTests` |
 | `GenerateFileForRead` download path with session-bound handles, cap and timeout (`… ResultFiles`) | ✅ | ✅ | [`MachineryResultTransferManager`](../src/Opc.Ua.Machinery.Server/Results/MachineryResultTransferManager.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
 | Result variables in the `Results` folder (`… ResultVariables`) | ✅ | ✅ | [`MachineryResultVariables`](../src/Opc.Ua.Machinery.Server/Results/MachineryResultVariables.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
+| Predefined result metadata (`Machinery-Result PredefinedResultMetaData`) | ✅ | ✅ opt-in via `WithPredefinedResultMetaData()` — refused on publish and on the way out of a bound store | [`PredefinedResultMetaData`](../src/Opc.Ua.Machinery.Server/Results/PredefinedResultMetaData.cs) | `MachineryPartsBuilderTests` |
 | Result-ready events with a concrete event type (`… ResultEvents`) | ✅ | ✅ | [`MachineryResultManagementBinder`](../src/Opc.Ua.Machinery.Server/Results/MachineryResultManagementBinder.cs) | `MachineryPartsBuilderTests`; `MachineryEndToEndTests` |
-| Predefined result metadata (`… PredefinedResultMetaData`) | ✅ | ❌ not advertised — the store decides what metadata a result carries | — | — |
 | Stand-alone result server without DI or the machine model, reporting the same units and facets | ✅ | ✅ | [`MachineryResultNodeManager`](../src/Opc.Ua.Machinery.Server/MachineryResultNodeManager.cs) | `MachineryResultServerTests` |
-| Durable result store | ❌ not shipped (in-memory only) | — | — | — |
+| Durable result store | ❌ not shipped (in-memory only) — deliberately deferred; the storage technology is an open decision | — | — | — |
 
 ### Client and hosting
 
@@ -763,9 +763,8 @@ documents for OPC-10030.
 
 Three defects in the cross-assembly dependency machinery only surfaced once a
 model consumed a dependency through a referenced assembly's payload rather
-than through `<AdditionalFiles>`. Two are fixed in the generator; the third is
-worked around in this library and is described last. All three are worth
-knowing about when adding the next companion specification.
+than through `<AdditionalFiles>`. All three are now fixed in the generator.
+They are worth knowing about when adding the next companion specification.
 
 **A VariableType's data type restriction was not carried.** `DependencyNode`
 recorded base type, numeric id, abstractness, data type fields and children, but
@@ -791,16 +790,16 @@ re-declares an inherited method emitted a reference to an
 `OwnerType_MethodMethodState` class the producer never generated. OPC 34100 ECM
 re-declaring the DI `LockingServices` methods is the first model to hit it.
 
-**An inherited child loses its reference type and its browse-name namespace —
-open.** `DependencyChild` carries the child's browse name as a bare string and
-no reference type, so when a derived type in a consuming model is instantiated
-*on its own*, the generator emits the inherited child with
+**An inherited child lost its reference type and its browse-name namespace.**
+`DependencyChild` carried the child's browse name as a bare string and no
+reference type, so when a derived type in a consuming model was instantiated
+*on its own*, the generator emitted the inherited child with
 `ReferenceTypeId = NodeId.Null` and the browse name qualified with the
-declaring model's namespace. Both are wrong, and the first is not cosmetic: a
+declaring model's namespace. Both were wrong, and the first was not cosmetic: a
 node with a null reference type is in the node tree but produces no reference
-in a filtered Browse, so no client ever sees it.
+in a filtered Browse, so no client ever saw it.
 
-Two OPC 40001-2 members are affected, both inherited from OPC 30081 PA-DIM:
+Two OPC 40001-2 members were affected, both inherited from OPC 30081 PA-DIM:
 
 | Member | Reference type | Browse name |
 | --- | --- | --- |
@@ -808,19 +807,31 @@ Two OPC 40001-2 members are affected, both inherited from OPC 30081 PA-DIM:
 | `ProcessValueVariableType.EngineeringUnits` | lost | wrong (PA-DIM, should be namespace 0) |
 
 The same member reached the other way — `ProcessValueType.AnalogSignal`'s
-`EngineeringUnits`, generated as a grandchild of the object type — is correct,
-which is what makes the inconsistency visible. `SignalTag` is mandatory, and
+`EngineeringUnits`, generated as a grandchild of the object type — was correct,
+which is what made the inconsistency visible. `SignalTag` is mandatory, and
 `EngineeringUnits` in namespace 0 is where a Data Access client reads the unit,
 so both matter for the OPC 40001-2 base facet.
 
-`ProcessValueBuilder.RepairInheritedPadimMembers` restores both at build time,
-because `ProcessValueBuilder` deliberately instantiates
-`ProcessValueVariableType` on its own to substitute the richer subtype into the
-`AnalogSignal` slot — the affected path. The repair is a stop-gap: the payload
-needs a browse-name namespace and a reference type on `DependencyChild`, behind
-a flag, the way the VariableType restriction was added. Only the in-process
-tests missed it; the end-to-end test over `opc.tcp` is what surfaced it,
-because a filtered Browse is where a null reference type finally shows.
+`DependencyChild` now carries a `BrowseNameNamespace` and a
+`ReferenceTypeName` / `ReferenceTypeNamespace`, behind two flag bits in the
+per-child flag byte, the way the VariableType restriction was added — so a
+payload written before the change stays readable. The producer records a browse
+namespace only when it differs from the declaring model and a reference type
+only when it departs from the kind default, which keeps the payload byte-identical
+for the ordinary case. The consumer (`MaterialiseDependencyChild`) now always
+assigns a reference type: the carried one when present, otherwise the same kind
+default `ImportInstance` applies to a locally declared instance. That last part
+matters — it means a model still consuming an older prebuilt payload is fixed
+too, not only one rebuilt against the new generator.
+
+The former stop-gap `ProcessValueBuilder.RepairInheritedPadimMembers` is gone;
+what remains of it is `ApplyDefaultSignalTag`, which was never a workaround but
+the OPC 30081 default value for a mandatory tag. Only the in-process tests
+missed the defect; the end-to-end test over `opc.tcp` is what surfaced it,
+because a filtered Browse is where a null reference type finally shows, and
+`MachineryProcessValueTests
+.TheSignalKeepsThePadimBrowseNameAndTheNarrowerTypeAsync` pins all four
+attributes.
 
 ## See also
 

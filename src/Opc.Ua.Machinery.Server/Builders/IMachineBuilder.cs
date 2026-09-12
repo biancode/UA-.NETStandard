@@ -113,6 +113,36 @@ namespace Opc.Ua.Machinery.Server.Builders
             Action<IProcessValueBuilder> configure);
 
         /// <summary>
+        /// Adds the OPC 40001-2 device object: an object carrying a
+        /// <c>MachineryComponentIdentificationType</c> nameplate that
+        /// implements OPC 30081's <c>ISignalSetType</c> and points at the
+        /// machine's process values through its <c>SignalSet</c>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The unit exists so a client can find the nameplate of the device
+        /// that produced a reading: the process values themselves carry no
+        /// identification. The <c>SignalSet</c> references the process values
+        /// rather than owning them — they keep hanging off the machine, where
+        /// OPC 40001-2 puts them.
+        /// </para>
+        /// <para>
+        /// Call it after the process values; every process value declared on
+        /// the machine is linked when the machine is registered, so the order
+        /// of the calls does not matter, but a process value added to the
+        /// address space outside the builder is not seen.
+        /// </para>
+        /// </remarks>
+        /// <param name="browseName">Browse name of the device object.</param>
+        /// <param name="configureIdentification">
+        /// Configures the device nameplate. <c>Manufacturer</c> and
+        /// <c>SerialNumber</c> are mandatory, as on any machinery item.
+        /// </param>
+        IMachineBuilder<TState> WithProcessValueDevice(
+            QualifiedName browseName,
+            Action<MachineryIdentificationData> configureIdentification);
+
+        /// <summary>
         /// Adds the OPC 40001-3 <c>JobManagement</c> object. The eleven job
         /// verbs come from the ISA-95 Job Control V2 model underneath and are
         /// bound to the registered provider, so this adds no verbs of its own.
