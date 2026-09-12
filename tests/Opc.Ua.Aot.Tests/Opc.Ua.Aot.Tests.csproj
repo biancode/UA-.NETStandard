@@ -19,17 +19,27 @@
   </PropertyGroup>
   <!-- On macOS (notably ARM64 / Apple silicon CI runners) the Apple linker can hit
        assertions when linking a very large NativeAOT binary. Prefer a size-focused
-       publish with no native debug payload: it keeps the CI-only test binary below
-       the linker thresholds without changing the managed test surface. Note:
-       -ld_classic was previously used as a fallback but is now deprecated and
+       publish with no native debug payload: it keeps the test binary below
+       the linker thresholds without changing the managed test surface. This
+       applies to every macOS publish, not just CI; a local `dotnet publish`
+       otherwise links the full-size image and trips
+       `ld: Assertion failed: (_addend == uniqueIndex && "too many large addends")`.
+       Note: -ld_classic was previously used as a fallback but is now deprecated and
        crashes with an assertion in recent Xcode toolchains; the default (new) linker
        handles the binary correctly. -->
-  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX')) AND ('$(TF_BUILD)' == 'true' OR '$(GITHUB_ACTIONS)' == 'true')">
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
     <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
     <OptimizationPreference>Size</OptimizationPreference>
     <DebugType>none</DebugType>
     <DebuggerSupport>false</DebuggerSupport>
     <StackTraceSupport>false</StackTraceSupport>
+    <!-- Drop the native debug payload and symbol table from the linked image.
+         The assertion is raised while the linker rewrites relocations, so the
+         fewer sections carrying large addends reach it, the better. -->
+    <StripSymbols>true</StripSymbols>
+    <NativeDebugSymbols>false</NativeDebugSymbols>
+    <EventSourceSupport>false</EventSourceSupport>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="TUnit" />
