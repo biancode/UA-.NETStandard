@@ -77,6 +77,36 @@ namespace Opc.Ua.Bindings.WebApi
         /// </summary>
         public WebApiEncoding DefaultEncoding { get; set; }
             = WebApiMediaType.DefaultEncoding;
+
+        /// <summary>
+        /// The service set the binding maps routes for and describes in
+        /// its OpenAPI document. Defaults to
+        /// <see cref="WebApiServiceSet.AllServices"/>;
+        /// <see cref="WebApiServiceSet.Sessionless"/> maps only the eight
+        /// sessionless services and leaves discovery and session
+        /// management to the binary / <c>opcua+uajson</c> endpoints.
+        /// </summary>
+        public WebApiServiceSet ServiceSet { get; set; }
+
+        /// <summary>
+        /// Route the OpenAPI document for <see cref="ServiceSet"/> is
+        /// served at with <c>GET</c>. Defaults to
+        /// <see cref="WebApiOpenApiDocument.DefaultPath"/>; <c>null</c> or
+        /// empty disables the route. The document is the published
+        /// specification, so the route allows anonymous access like
+        /// <c>/findservers</c> and <c>/getendpoints</c>.
+        /// </summary>
+        public string? OpenApiDocumentPath { get; set; } = WebApiOpenApiDocument.DefaultPath;
+
+        /// <summary>
+        /// Server URL advertised in the served document's <c>servers</c>
+        /// list. Defaults to <c>null</c>, which advertises the request's
+        /// path base (<c>/</c> when the binding is mounted at the root) as
+        /// a relative URL that clients resolve against the document's own
+        /// location. Set an absolute URL when a reverse proxy changes the
+        /// externally visible address.
+        /// </summary>
+        public string? OpenApiServerUrl { get; set; }
     }
 }
 #endif

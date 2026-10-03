@@ -169,6 +169,25 @@ namespace Opc.Ua.Bindings
             = s_routes.ToFrozenDictionary(r => r.RequestType);
 
         /// <summary>
+        /// The paths of opc.ua.openapi.sessionless.json: the services a
+        /// client can invoke without CreateSession / ActivateSession.
+        /// </summary>
+        private static readonly FrozenSet<string> s_sessionlessPaths = new[]
+        {
+            "/read",
+            "/write",
+            "/historyread",
+            "/historyupdate",
+            "/call",
+            "/browse",
+            "/browsenext",
+            "/translate"
+        }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+        private static readonly WebApiServiceRoute[] s_sessionlessRoutes
+            = Array.FindAll(s_routes, r => s_sessionlessPaths.Contains(r.Path));
+
+        /// <summary>
         /// All routes defined by <c>opc.ua.openapi.allservices.json</c>,
         /// grouped by service set in spec order.
         /// </summary>
@@ -179,6 +198,28 @@ namespace Opc.Ua.Bindings
         /// the count in <c>opc.ua.openapi.allservices.json</c>.
         /// </summary>
         public static int Count => s_routes.Length;
+
+        /// <summary>
+        /// The routes defined by <c>opc.ua.openapi.sessionless.json</c>:
+        /// the Attribute, Method and View services a client can invoke
+        /// without first creating and activating a session. A subset of
+        /// <see cref="Routes"/>, in the same order.
+        /// </summary>
+        public static IReadOnlyList<WebApiServiceRoute> SessionlessRoutes => s_sessionlessRoutes;
+
+        /// <summary>
+        /// Returns whether <paramref name="route"/> belongs to the
+        /// sessionless service set (<see cref="SessionlessRoutes"/>).
+        /// </summary>
+        /// <param name="route">The route to test.</param>
+        /// <returns>
+        /// <c>true</c> if the route is listed by
+        /// <c>opc.ua.openapi.sessionless.json</c>; otherwise <c>false</c>.
+        /// </returns>
+        public static bool IsSessionless(WebApiServiceRoute route)
+        {
+            return route.Path != null && s_sessionlessPaths.Contains(route.Path);
+        }
 
         /// <summary>
         /// Looks up a route by its URL path (e.g. <c>/read</c>).

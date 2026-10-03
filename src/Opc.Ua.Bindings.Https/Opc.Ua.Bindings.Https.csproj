@@ -45,6 +45,13 @@
         <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
         <PackageReference Include="Microsoft.AspNetCore.Authentication.Certificate" />
       </ItemGroup>
+      <ItemGroup>
+        <!-- The normative OpenAPI documents served by WebApiOpenApiDocument. -->
+        <EmbeddedResource Include="WebApi\OpenApi\opc.ua.openapi.allservices.json"
+                          LogicalName="Opc.Ua.Bindings.WebApi.OpenApi.opc.ua.openapi.allservices.json" />
+        <EmbeddedResource Include="WebApi\OpenApi\opc.ua.openapi.sessionless.json"
+                          LogicalName="Opc.Ua.Bindings.WebApi.OpenApi.opc.ua.openapi.sessionless.json" />
+      </ItemGroup>
     </Otherwise>
   </Choose>
   <ItemGroup>

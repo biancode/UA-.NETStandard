@@ -35,6 +35,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Opc.Ua;
+using Opc.Ua.Bindings;
+using Opc.Ua.Bindings.WebApi;
 using Opc.Ua.Bindings.WebApi.Endpoints;
 
 namespace Microsoft.AspNetCore.Builder
@@ -89,9 +91,42 @@ namespace Microsoft.AspNetCore.Builder
         public static IEndpointConventionBuilder MapWebApiEndpoints(
             this IEndpointRouteBuilder endpoints)
         {
+            return MapWebApiEndpoints(endpoints, WebApiServiceSet.AllServices);
+        }
+
+        /// <summary>
+        /// Maps the OPC UA REST service routes of
+        /// <paramref name="serviceSet"/> onto
+        /// <paramref name="endpoints"/>: all 28 routes of
+        /// <c>opc.ua.openapi.allservices.json</c>, or the 8 routes of
+        /// <c>opc.ua.openapi.sessionless.json</c>.
+        /// </summary>
+        /// <param name="endpoints">
+        /// The endpoint route builder. Must not be <c>null</c>.
+        /// </param>
+        /// <param name="serviceSet">The service set to map.</param>
+        /// <returns>
+        /// A grouped endpoint convention builder so callers can apply
+        /// shared conventions to all mapped routes at once.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="endpoints"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="serviceSet"/> is not a defined value.
+        /// </exception>
+        public static IEndpointConventionBuilder MapWebApiEndpoints(
+            this IEndpointRouteBuilder endpoints,
+            WebApiServiceSet serviceSet)
+        {
             ArgumentNullException.ThrowIfNull(endpoints);
+            if (!Enum.IsDefined(serviceSet))
+            {
+                throw new ArgumentOutOfRangeException(nameof(serviceSet));
+            }
 
             RouteGroupBuilder group = endpoints.MapGroup(string.Empty);
+            bool allServices = serviceSet == WebApiServiceSet.AllServices;
 
             // Discovery routes are anonymous-exempt per OPC UA spec:
             // FindServers / GetEndpoints must be callable without
@@ -100,8 +135,11 @@ namespace Microsoft.AspNetCore.Builder
             // session. Mark them explicitly so they bypass any
             // RequireAuthorization() metadata applied at the group
             // level by the contributor.
-            group.MapPost("/findservers", FindServersAsync).AllowAnonymous();
-            group.MapPost("/getendpoints", GetEndpointsAsync).AllowAnonymous();
+            if (allServices)
+            {
+                group.MapPost("/findservers", FindServersAsync).AllowAnonymous();
+                group.MapPost("/getendpoints", GetEndpointsAsync).AllowAnonymous();
+            }
 
             // All other services are subject to authorization when an
             // auth scheme is registered. The contributor decides
@@ -116,6 +154,14 @@ namespace Microsoft.AspNetCore.Builder
             group.MapPost("/browse", BrowseAsync);
             group.MapPost("/browsenext", BrowseNextAsync);
             group.MapPost("/translate", TranslateAsync);
+
+            // The eight services above are the routes of
+            // opc.ua.openapi.sessionless.json.
+            if (!allServices)
+            {
+                return group;
+            }
+
             group.MapPost("/registernodes", RegisterNodesAsync);
             group.MapPost("/unregisternodes", UnregisterNodesAsync);
             group.MapPost("/createsession", CreateSessionAsync);
@@ -136,6 +182,74 @@ namespace Microsoft.AspNetCore.Builder
             group.MapPost("/deletesubscriptions", DeleteSubscriptionsAsync);
 
             return group;
+        }
+
+        /// <summary>
+        /// Maps a <c>GET</c> route that serves the normative OpenAPI
+        /// document of <paramref name="serviceSet"/> (see
+        /// <see cref="WebApiOpenApiDocument"/>). The route allows
+        /// anonymous access: the document is the published
+        /// specification and discloses nothing about the address space.
+        /// </summary>
+        /// <param name="endpoints">
+        /// The endpoint route builder. Must not be <c>null</c>.
+        /// </param>
+        /// <param name="serviceSet">
+        /// The service set to describe; pass the one given to
+        /// <see cref="MapWebApiEndpoints(IEndpointRouteBuilder, WebApiServiceSet)"/>.
+        /// </param>
+        /// <param name="pattern">The route pattern to serve the document at.</param>
+        /// <param name="serverUrl">
+        /// Server URL to advertise in the document's <c>servers</c> list,
+        /// or <c>null</c> to advertise the request's path base as a
+        /// relative URL.
+        /// </param>
+        /// <returns>The endpoint convention builder of the mapped route.</returns>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="endpoints"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// <paramref name="pattern"/> is <c>null</c> or empty.
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="serviceSet"/> is not a defined value.
+        /// </exception>
+        public static IEndpointConventionBuilder MapWebApiOpenApiDocument(
+            this IEndpointRouteBuilder endpoints,
+            WebApiServiceSet serviceSet = WebApiServiceSet.AllServices,
+            string pattern = WebApiOpenApiDocument.DefaultPath,
+            string? serverUrl = null)
+        {
+            ArgumentNullException.ThrowIfNull(endpoints);
+            ArgumentException.ThrowIfNullOrEmpty(pattern);
+            if (!Enum.IsDefined(serviceSet))
+            {
+                throw new ArgumentOutOfRangeException(nameof(serviceSet));
+            }
+            if (serverUrl != null && serverUrl.Length == 0)
+            {
+                serverUrl = null;
+            }
+
+            RequestDelegate handler = context =>
+                WriteOpenApiDocumentAsync(context, serviceSet, serverUrl);
+            return endpoints.MapGet(pattern, handler).AllowAnonymous();
+        }
+
+        private static Task WriteOpenApiDocumentAsync(
+            HttpContext context,
+            WebApiServiceSet serviceSet,
+            string? serverUrl)
+        {
+            PathString pathBase = context.Request.PathBase;
+            string url = serverUrl ?? (pathBase.HasValue ? pathBase.Value + "/" : "/");
+            ReadOnlyMemory<byte> document = WebApiOpenApiDocument.Render(serviceSet, url).Memory;
+
+            HttpResponse response = context.Response;
+            response.StatusCode = Microsoft.AspNetCore.Http.StatusCodes.Status200OK;
+            response.ContentType = WebApiMediaType.ContentType;
+            response.ContentLength = document.Length;
+            return response.Body.WriteAsync(document, context.RequestAborted).AsTask();
         }
 
         private static Task ReadAsync(HttpContext ctx)

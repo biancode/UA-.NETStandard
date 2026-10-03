@@ -65,11 +65,15 @@ namespace Opc.Ua.Bindings.WebApi
         IHttpsListenerServiceContributor
     {
         private readonly WebApiServer m_server;
+        private readonly WebApiTransportOptions m_options;
 
-        public WebApiHttpsStartupContributor(WebApiServer server)
+        public WebApiHttpsStartupContributor(
+            WebApiServer server,
+            WebApiTransportOptions? options = null)
         {
             ArgumentNullException.ThrowIfNull(server);
             m_server = server;
+            m_options = options ?? new WebApiTransportOptions();
         }
 
         /// <inheritdoc/>
@@ -175,7 +179,7 @@ namespace Opc.Ua.Bindings.WebApi
             }
             appBuilder.UseEndpoints(endpoints =>
             {
-                IEndpointConventionBuilder group = endpoints.MapWebApiEndpoints();
+                IEndpointConventionBuilder group = endpoints.MapWebApiEndpoints(m_options.ServiceSet);
                 if (hasAuth)
                 {
                     // Require any successful authentication on every
@@ -183,6 +187,13 @@ namespace Opc.Ua.Bindings.WebApi
                     // GetEndpoints) carry AllowAnonymous metadata so
                     // they remain reachable without a credential.
                     group.RequireAuthorization();
+                }
+                if (!string.IsNullOrEmpty(m_options.OpenApiDocumentPath))
+                {
+                    endpoints.MapWebApiOpenApiDocument(
+                        m_options.ServiceSet,
+                        m_options.OpenApiDocumentPath,
+                        m_options.OpenApiServerUrl);
                 }
             });
 

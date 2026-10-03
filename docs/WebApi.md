@@ -14,15 +14,16 @@ mounted on the same Kestrel host as the binary and
 
 - [Quick start](#quick-start)
 - [Routes (full coverage)](#routes-full-coverage)
+- [Service sets and the OpenAPI document](#service-sets-and-the-openapi-document)
 - [Encoding negotiation](#encoding-negotiation)
 - [Discovery](#discovery)
+- [Conformance with the normative documents](#conformance-with-the-normative-documents)
 - [Wire format](#wire-format)
 - [Authentication](#authentication)
   - [JWT claim projection (built-in)](#jwt-claim-projection-built-in)
 - [Hosting modes](#hosting-modes)
 - [Long-poll `/publish`](#long-poll-publish)
 - [Client integration](#client-integration)
-- [Related plans and follow-ups](#related-plans-and-follow-ups)
 
 - **Server side**: ASP.NET Core Minimal-API endpoints (one `MapPost`
   per spec service) — **NativeAOT-compatible**; no MVC reflection, no
@@ -71,7 +72,7 @@ Verbose JSON flavour.
 ## Routes (full coverage)
 
 The binding implements every service in the spec's
-[`opc.ua.openapi.allservices.json`](https://github.com/OPCFoundation/UA-Nodeset/blob/latest/Schema/opc.ua.openapi.allservices.json)
+[`opc.ua.openapi.allservices.json`](https://github.com/OPCFoundation/UA-Nodeset/blob/latest/OpenApi/opc.ua.openapi.allservices.json)
 document — 28 services across the Discovery, Session, View, Attribute,
 Method, MonitoredItem, and Subscription service sets. NodeManagement
 (Part 4 §5.8) and Query (§5.10) are **not in scope** — the spec
@@ -91,6 +92,57 @@ All routes are `POST` with a JSON body holding the matching
 `<Service>Request`; the response body is the matching
 `<Service>Response`. The route table is the source of truth — see
 `WebApiServiceRoutes` in `src/Opc.Ua.Core/Stack/WebApi/`.
+
+## Service sets and the OpenAPI document
+
+The OPC Foundation publishes two OpenAPI documents in
+[`UA-Nodeset/OpenApi`](https://github.com/OPCFoundation/UA-Nodeset/tree/latest/OpenApi)
+(`info.version` 1.5.7). Both are embedded unchanged in the binding
+(`src/Opc.Ua.Bindings.Https/WebApi/OpenApi/`, see the README there for
+the pinned upstream commit):
+
+| `WebApiServiceSet` | Document | Routes |
+| --- | --- | --- |
+| `AllServices` (default) | `opc.ua.openapi.allservices.json` | all 28 |
+| `Sessionless` | `opc.ua.openapi.sessionless.json` | `/read`, `/write`, `/historyread`, `/historyupdate`, `/call`, `/browse`, `/browsenext`, `/translate` |
+
+`Sessionless` maps only the eight sessionless routes; discovery and
+session management stay on the binary / `opcua+uajson` endpoints of the
+same listener.
+
+The binding serves the document of the selected service set at
+`GET /openapi.json`. Like `/findservers` and `/getendpoints`, the route
+allows anonymous access: it is the published specification and says
+nothing about the address space. Only the `servers` list is rewritten.
+By default it holds the request's path base as a relative URL (`/`),
+which OpenAPI 3.0 clients resolve against the document's own location.
+
+```csharp
+services.AddOpcUa()
+    .AddHttpsTransport()
+    .AddWebApiTransport(opt =>
+    {
+        opt.ServiceSet = WebApiServiceSet.Sessionless;
+        opt.OpenApiDocumentPath = "/openapi.json";            // null disables the route
+        opt.OpenApiServerUrl = "https://plant.example:4843/"; // behind a reverse proxy
+    });
+```
+
+A generated client is built straight from a running server:
+
+```bash
+openapi-generator-cli generate -g csharp \
+    -i https://server:4843/openapi.json -o ./client
+```
+
+Hosts that compose their own pipeline call
+`endpoints.MapWebApiEndpoints(serviceSet)` and
+`endpoints.MapWebApiOpenApiDocument(serviceSet)` directly.
+`WebApiOpenApiDocument.GetNormativeDocument(...)` returns the embedded
+bytes unchanged.
+
+The [OPC UA over OpenAPI](OpenApi.md) guide covers generating clients,
+the JSON the generated clients send, and their known issues.
 
 ## Encoding negotiation
 
@@ -160,6 +212,43 @@ endpoint description with all of these fields pre-populated.
 The persistent WSS client multiplexes requests with connection-local wire
 handles while preserving caller-visible handles. See [Transports](Transports.md)
 for cancellation, late-response routing and connection-lifetime behavior.
+
+## Conformance with the normative documents
+
+`WebApiOpenApiConformanceTests` (in
+`tests/Opc.Ua.Bindings.Https.WebApi.Tests/OpenApi/`) compares the binding
+with the embedded documents:
+
+- every path, `operationId`, and request / response schema name against
+  `WebApiServiceRoutes`, for both service sets;
+- every integer enumeration (`x-enum-varnames` + values) against its CLR
+  enumeration;
+- for every component schema with a CLR structure (over 100), the
+  properties the encoder emits in Compact and Verbose against the schema's
+  properties, including those inherited through `allOf`.
+
+`WebApiStubInteropTests` posts request bodies shaped the way the generated
+`opcua-webapi-dotnet` client serializes them. That client omits
+default-valued fields, sends enumerations as integers, Variants as
+`{UaType, Value}` and ExtensionObjects as `{UaTypeId, UaEncoding, UaBody}`.
+
+### Known specification discrepancy: DataValue status field
+
+Part 6 [Table 42](https://reference.opcfoundation.org/Core/Part6/v105/docs/5.4.2.18)
+names the DataValue status field `"Status"`. The OpenAPI documents name it
+`"StatusCode"`, and so do the clients generated from them. The stack
+follows Part 6:
+
+- the encoder writes `"Status"`;
+- the decoder accepts both `"Status"` and `"StatusCode"`, so a DataValue
+  written by a generated client keeps its status.
+
+A generated client therefore reads a non-Good DataValue status in a
+response as absent (Good) until one of the two publications is aligned
+(reported as [UA-Nodeset#146](https://github.com/OPCFoundation/UA-Nodeset/issues/146)).
+`DataValueDiffersFromDocumentOnlyInStatusFieldName` pins this as the only
+difference, so a correction upstream makes the test fail and prompts a
+review.
 
 ## Wire format
 
@@ -324,10 +413,3 @@ ReadResponse response = await session.ReadAsync(new ReadRequest
 
 The companion `UseWssOpenApiEndpoint(url)` shortcut binds the same
 session model to the WebSocket `opcua+openapi` sub-protocol.
-
-## Related plans and follow-ups
-
-- **Source-generated OpenAPI document** (deferred) — the spec's
-  `opc.ua.openapi.allservices.json` document and a runtime `/openapi/v1.json`
-  endpoint will land in a future PR; the current binding produces
-  spec-shaped JSON bodies without needing the document itself.

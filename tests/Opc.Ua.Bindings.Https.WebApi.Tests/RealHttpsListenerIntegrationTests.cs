@@ -764,6 +764,79 @@ namespace Opc.Ua.Bindings.Https.WebApi.Tests
             }
         }
 
+        [Test]
+        public async Task OpenApiDocumentIsServedByRealHttpsListener()
+        {
+            using HttpResponseMessage response = await m_client!
+                .GetAsync(new Uri(WebApiOpenApiDocument.DefaultPath, UriKind.Relative))
+                .ConfigureAwait(false);
+
+            Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.OK));
+            using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(
+                await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            Assert.That(
+                document.RootElement.GetProperty("paths").EnumerateObject().Count(),
+                Is.EqualTo(WebApiServiceRoutes.Count));
+        }
+
+        [Test]
+        public async Task ServiceSetAndDocumentPathApplyOnTheRealHttpsListener()
+        {
+            var options = new WebApiTransportOptions
+            {
+                ServiceSet = WebApiServiceSet.Sessionless,
+                OpenApiDocumentPath = "/spec.json"
+            };
+            IServiceMessageContext messageContext = ServiceMessageContext.CreateEmpty(m_telemetry!);
+            var factory = new HttpsTransportListenerFactory();
+            factory.StartupContributors.Add(new WebApiHttpsStartupContributor(
+                new WebApiServer(messageContext, "configured-rest-api"),
+                options));
+            var listener = (HttpsTransportListener)factory.Create(m_telemetry!);
+            int port = FindAvailableTcpPort();
+            try
+            {
+                await listener.OpenAsync(
+                    new Uri($"https://localhost:{port}/"),
+                    CreateListenerSettings(m_certificateRegistry!, port),
+                    new StubTransportListenerCallback()).ConfigureAwait(false);
+                await WaitForListenerReadyAsync(port).ConfigureAwait(false);
+                using var client = new HttpClient(m_clientHandler!, disposeHandler: false)
+                {
+                    BaseAddress = new Uri($"https://localhost:{port}/")
+                };
+
+                using HttpResponseMessage document = await client
+                    .GetAsync(new Uri("/spec.json", UriKind.Relative))
+                    .ConfigureAwait(false);
+                Assert.That(document.StatusCode, Is.EqualTo(HttpStatusCode.OK));
+
+                var read = new ReadRequest { RequestHeader = new RequestHeader { RequestHandle = 1 } };
+                using var readContent = new ByteArrayContent(
+                    WebApiBodyCodec.EncodeBody(read, messageContext));
+                readContent.Headers.ContentType = new MediaTypeHeaderValue(WebApiMediaType.ContentType);
+                using HttpResponseMessage readResponse = await client
+                    .PostAsync(new Uri("/read", UriKind.Relative), readContent)
+                    .ConfigureAwait(false);
+                Assert.That(readResponse.StatusCode, Is.EqualTo(HttpStatusCode.OK));
+
+                var create = new CreateSessionRequest { RequestHeader = new RequestHeader() };
+                using var createContent = new ByteArrayContent(
+                    WebApiBodyCodec.EncodeBody(create, messageContext));
+                createContent.Headers.ContentType = new MediaTypeHeaderValue(WebApiMediaType.ContentType);
+                using HttpResponseMessage createResponse = await client
+                    .PostAsync(new Uri("/createsession", UriKind.Relative), createContent)
+                    .ConfigureAwait(false);
+                Assert.That(createResponse.StatusCode, Is.Not.EqualTo(HttpStatusCode.OK),
+                    "session services are not mapped for the sessionless service set");
+            }
+            finally
+            {
+                await listener.CloseAsync().ConfigureAwait(false);
+                await listener.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
         private static Certificate CreateServerCertificate()
         {
             return DefaultCertificateFactory.Instance

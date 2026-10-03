@@ -92,6 +92,14 @@ services
                                       // AddWebApiMutualTlsAuth()
 ```
 
+The binding serves the normative OpenAPI document from
+[`UA-Nodeset/OpenApi`](https://github.com/OPCFoundation/UA-Nodeset/tree/latest/OpenApi)
+at `GET /openapi.json`, so generated clients such as
+[`opcua-webapi-dotnet`](https://github.com/OPCFoundation/opcua-webapi-dotnet)
+can be pointed at a running server. `WebApiTransportOptions.ServiceSet`
+selects all 28 services or the 8 sessionless ones; the served document
+follows the selection.
+
 The companion WSS sub-profile `opcua+openapi` (profile/2339) is
 provided by `WebApiWssTransportChannel` (client) and
 `HttpsTransportListener.AcceptWebSocketOpenApiAsync` (server).
