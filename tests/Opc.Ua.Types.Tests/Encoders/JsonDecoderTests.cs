@@ -251,6 +251,36 @@ namespace Opc.Ua.Types.Tests.Encoders
         }
 
         [Test]
+        public void ReadDataValueAcceptsTheStatusCodeFieldOfTheOpenApiDocuments()
+        {
+            // The normative OpenAPI documents (UA-Nodeset/OpenApi) name the
+            // DataValue status field "StatusCode"; Part 6 Table 42 names it
+            // "Status". A DataValue sent by a generated client keeps its
+            // status.
+            string json = $$$"""{"UaType":6, "Value":7, "StatusCode":{"Code":{{{StatusCodes.BadTypeMismatch.Code}}}}}""";
+            using JsonDecoder reader = NewDecoder(Body(json));
+            DataValue result = reader.ReadDataValue(JsonProperties.Value);
+            Assert.Multiple(() =>
+            {
+                Assert.That(result.WrappedValue, Is.EqualTo(new Variant(7)));
+                Assert.That(result.StatusCode, Is.EqualTo(StatusCodes.BadTypeMismatch));
+            });
+        }
+
+        [Test]
+        public void ReadDataValuePrefersThePartSixStatusField()
+        {
+            string json = $$$"""
+                {"UaType":6, "Value":7,
+                 "Status":{"Code":{{{StatusCodes.BadNotWritable.Code}}}},
+                 "StatusCode":{"Code":{{{StatusCodes.BadTypeMismatch.Code}}}}}
+                """;
+            using JsonDecoder reader = NewDecoder(Body(json));
+            DataValue result = reader.ReadDataValue(JsonProperties.Value);
+            Assert.That(result.StatusCode, Is.EqualTo(StatusCodes.BadNotWritable));
+        }
+
+        [Test]
         public void ReadDataValueWhenLocalizedTextObject()
         {
             using JsonDecoder reader = NewDecoder(Body(/*lang=json,strict*/ """{"Text": "text"}"""));

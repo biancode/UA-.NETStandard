@@ -1329,6 +1329,16 @@ namespace Opc.Ua
                     {
                         JsonElement statusCodeElement =
                             GetPropertyElement(JsonProperties.Status);
+                        if (statusCodeElement.ValueKind == JsonValueKind.Undefined)
+                        {
+                            // Part 6 Table 42 names the field "Status", but the
+                            // normative OpenAPI documents (UA-Nodeset/OpenApi,
+                            // 1.5.7) and the clients generated from them name it
+                            // "StatusCode". Accept both so their writes keep the
+                            // status; the encoder emits the Part 6 name.
+                            // https://github.com/OPCFoundation/UA-Nodeset/issues/146
+                            statusCodeElement = GetPropertyElement(JsonProperties.StatusCode);
+                        }
                         JsonElement sourceTimesstampElement =
                             GetPropertyElement(JsonProperties.SourceTimestamp);
                         JsonElement serverTimestampElement =

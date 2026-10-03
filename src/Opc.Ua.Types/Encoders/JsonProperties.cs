@@ -82,6 +82,9 @@ namespace Opc.Ua
         public static string Status
             => "Status";
 
+        public static string StatusCode
+            => "StatusCode";
+
         public static string ServerTimestamp
             => "ServerTimestamp";
 
